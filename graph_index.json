@@ -1,0 +1,36 @@
+{
+  "graph_name": "Nādabrahma Second Brain & Architecture Graph",
+  "version": "1.0.0",
+  "last_updated": "2026-09-17T05:00:00Z",
+  "nodes": [
+    { "id": "nadabrahma", "label": "Nādabrahma DAW", "type": "system", "file": "README.md" },
+    { "id": "context", "label": "AI Context Handover", "type": "meta", "file": "00_SYSTEM_CONTEXT.md" },
+    { "id": "master_spec", "label": "Master Specification", "type": "spec", "file": "01_MASTER_SPECIFICATION.md" },
+    { "id": "m1_max", "label": "M1 Max 32GB Architecture", "type": "hardware", "file": "02_M1_MAX_ARCHITECTURE.md" },
+    { "id": "roadmap", "label": "Development Roadmap", "type": "plan", "file": "03_ROADMAP_AND_IMPLEMENTATION.md" },
+    { "id": "indian_engine", "label": "Indian Classical Engine", "type": "musicology", "file": "Core_Concepts/Indian_Classical_Engine.md" },
+    { "id": "sanskrit_engine", "label": "Sanskrit Vedic Engine (Vāgdhenu)", "type": "linguistics", "file": "Core_Concepts/Sanskrit_Vedic_Engine.md" },
+    { "id": "ai_suite", "label": "4-Model AI Suite", "type": "models", "file": "Core_Concepts/Multi_Model_AI_Suite.md" },
+    { "id": "universal_roles", "label": "Universal Audio Roles (BGM/VO/Foley)", "type": "production", "file": "Core_Concepts/Universal_Audio_Roles.md" },
+    { "id": "extended_96k", "label": "Extended Spectrum 96k (10Hz-48kHz)", "type": "dsp", "file": "Core_Concepts/Extended_Frequency_96k.md" },
+    { "id": "directors_mode", "label": "Director's Navarasa Mode", "type": "workflow", "file": "Workflows/Directors_Mode_Workflow.md" },
+    { "id": "risers_drops", "label": "Track 5 Risers & Drops", "type": "workflow", "file": "Workflows/Track_5_Risers_Drops.md" },
+    { "id": "mcp_agentic", "label": "Local FastMCP Server", "type": "agentic", "file": "Workflows/MCP_Agentic_Production.md" },
+    { "id": "thedaw", "label": "theDAW Integration", "type": "heritage", "file": "Architecture_Deep_Dives/theDAW_Features.md" },
+    { "id": "resonant", "label": "Resonant Integration", "type": "heritage", "file": "Architecture_Deep_Dives/Resonant_Features.md" },
+    { "id": "stemforge", "label": "StemForge Integration", "type": "heritage", "file": "Architecture_Deep_Dives/StemForge_Features.md" }
+  ],
+  "edges": [
+    { "source": "nadabrahma", "target": "master_spec", "relation": "defined_by" },
+    { "source": "nadabrahma", "target": "m1_max", "relation": "optimized_for" },
+    { "source": "nadabrahma", "target": "indian_engine", "relation": "embeds" },
+    { "source": "nadabrahma", "target": "sanskrit_engine", "relation": "embeds" },
+    { "source": "nadabrahma", "target": "ai_suite", "relation": "orchestrates" },
+    { "source": "nadabrahma", "target": "extended_96k", "relation": "runs_at" },
+    { "source": "directors_mode", "target": "indian_engine", "relation": "filters_by_navarasa" },
+    { "source": "directors_mode", "target": "ai_suite", "relation": "dispatches_tracks" },
+    { "source": "risers_drops", "target": "ai_suite", "relation": "powered_by_stable_audio_3" },
+    { "source": "mcp_agentic", "target": "nadabrahma", "relation": "controls_via_claude_antigravity" },
+    { "source": "extended_96k", "target": "ai_suite", "relation": "auto_upscales_every_generation" }
+  ]
+}
