@@ -11,9 +11,9 @@ import (
 )
 
 // CeilingGB is the maximum allowed working memory in gigabytes.
-// Set at 14 GB to stay within the 12–15 GB directive, leaving 18 GB+
-// headroom for macOS, Safari, and background multitasking.
-const CeilingGB = 14.0
+// Set at 28 GB on a 32 GB Apple Silicon M1 Max machine to leave 4 GB+
+// headroom for system and multitasking.
+const CeilingGB = 28.0
 
 // Stats holds the current snapshot of system memory usage.
 type Stats struct {
@@ -49,15 +49,24 @@ func Get() (Stats, error) {
 	}, nil
 }
 
-// WouldExceedCeiling returns true if loading a model of modelGB gigabytes
-// would push working memory above the ceiling.
+// MaxModelMemoryGB is the maximum allowed working memory for a single model (18 GB).
+// Nādabrahma directive: Keep model footprint under 18GB to leave 14GB+ headroom.
+const MaxModelMemoryGB = 18.0
+
+// WouldExceedCeiling returns true if the model itself exceeds the 18GB architecture
+// directive or if system Unified Memory is under critical pressure.
 func WouldExceedCeiling(modelGB float64) (bool, Stats, error) {
 	stats, err := Get()
 	if err != nil {
 		return false, stats, err
 	}
-	projected := stats.UsedGB + modelGB
-	return projected > CeilingGB, stats, nil
+	if modelGB > MaxModelMemoryGB {
+		return true, stats, nil
+	}
+	if stats.UsedGB > CeilingGB || stats.PressurePct > 95.0 {
+		return true, stats, nil
+	}
+	return false, stats, nil
 }
 
 // totalMemoryGB reads the physical memory size via sysctl.

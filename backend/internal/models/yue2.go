@@ -48,6 +48,10 @@ func (a *YuE2Adapter) Generate(ctx context.Context, req GenerateRequest, progres
 	//              --lyrics "<lyrics or instrumental text>" \
 	//              --duration <seconds> \
 	//              --out -
+	style := req.Tags
+	if style == "" {
+		style = "cinematic, expressive"
+	}
 	lyrics := req.Lyrics
 	if lyrics == "" {
 		lyrics = "[Instrumental]"
@@ -57,9 +61,9 @@ func (a *YuE2Adapter) Generate(ctx context.Context, req GenerateRequest, progres
 		"--family", "yue2",
 		"--model", weightsPath,
 		"--backend", "metal",
-		"--request-option", fmt.Sprintf("style=%s", req.Tags),
+		"--request-option", fmt.Sprintf("style=%s", style),
 		"--lyrics", lyrics,
-		"--duration", fmt.Sprintf("%.0f", req.DurationSec),
+		"--duration-seconds", fmt.Sprintf("%.0f", req.DurationSec),
 		"--out", "-", // stream WAV to stdout
 	}
 

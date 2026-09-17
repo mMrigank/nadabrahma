@@ -3,7 +3,7 @@ import {
   Sparkles, Wand2, Plus, Sliders, Music, Zap, Layers, 
   Cpu, HardDrive, ShieldCheck, ChevronUp, ChevronDown, CheckCircle2,
   Volume2, Play, Pause, Square, Activity, Scissors, Compass,
-  RotateCcw, RotateCw, GitBranch, Radio
+  RotateCcw, RotateCw, GitBranch, Radio, Folder
 } from 'lucide-react';
 import { Track, Raga, Tala, RasaType, DirectorSceneState, TransitionFXState, TrackRole, AIModel, MetronomeTimbre, SpatialCoordinates, AudioClip, PluginInstance, ArrangementSection } from './types/daw';
 import { RAGA_DATABASE, TALA_DATABASE } from './lib/ragaEngine';
@@ -21,11 +21,13 @@ import { VagdhenuLyricsDrawer } from './components/VagdhenuLyricsDrawer';
 import { ShrutiMandalaModal } from './components/ShrutiMandalaModal';
 import { AIModelOrchestratorModal } from './components/AIModelOrchestratorModal';
 import { StemForgeModal } from './components/StemForgeModal';
+import { ModelLibraryModal } from './components/ModelLibraryModal';
 import { SpatialAudioModal } from './components/SpatialAudioModal';
 import { SessionSnapshotModal } from './components/SessionSnapshotModal';
 import { MidiControllerModal } from './components/MidiControllerModal';
 import { AudioPluginHostModal } from './components/AudioPluginHostModal';
 import { ArrangementAssistantModal } from './components/ArrangementAssistantModal';
+import { RendersModal } from './components/RendersModal';
 import { DEFAULT_MASTER_PLUGINS } from './lib/pluginEngine';
 import { arrangementEngine } from './lib/arrangementEngine';
 import { getOptimizedLoadedModels, calculateWorkingMemoryGB } from './lib/aiModelData';
@@ -243,7 +245,7 @@ export function App() {
   }, [currentBeat]);
 
   // Multitrack state
-  const [tracks, setTracks] = useState<Track[]>([]); // Start entirely clean
+  const [tracks, setTracks] = useState<Track[]>(INITIAL_TRACKS); // Use initialized tracks without takes
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
   // Modal / Drawer visibility
@@ -259,7 +261,26 @@ export function App() {
   const [isAIOrchestratorOpen, setIsAIOrchestratorOpen] = useState<boolean>(false);
   const [orchestratorTrackId, setOrchestratorTrackId] = useState<string | null>(null);
   const [isStemForgeOpen, setIsStemForgeOpen] = useState<boolean>(false);
+  const [isModelLibraryOpen, setIsModelLibraryOpen] = useState<boolean>(false);
   const [isSpatialAudioOpen, setIsSpatialAudioOpen] = useState<boolean>(false);
+  const [isRendersModalOpen, setIsRendersModalOpen] = useState<boolean>(false);
+
+  // Global AI Generation Status
+  const [aiStatus, setAiStatus] = useState<{
+    active: boolean;
+    model: string;
+    progress: number;
+    taskName: string;
+    usedGB?: number;
+    totalGB?: number;
+    pressurePct?: number;
+    error?: string;
+  }>({
+    active: false,
+    model: '',
+    progress: 0,
+    taskName: ''
+  });
   const [isSnapshotModalOpen, setIsSnapshotModalOpen] = useState<boolean>(false);
   const [isMidiModalOpen, setIsMidiModalOpen] = useState<boolean>(false);
   const [midiDeviceCount, setMidiDeviceCount] = useState<number>(0);
@@ -645,11 +666,249 @@ export function App() {
     showToast(`Added track: ${newTrack.name} (${tracks.length + 1} total tracks)`);
   };
 
-  const handleApplyDirectorScene = (scene: DirectorSceneState, raga: Raga) => {
+  const handleMountClipToTrack = (trackId: string, clip: AudioClip, take: AudioTake) => {
+    setTracks(prevTracks => prevTracks.map(track => {
+      if (track.id === trackId) {
+        return {
+          ...track,
+          takes: [...track.takes, take],
+          activeTakeIndex: track.takes.length,
+          clips: [...track.clips.filter(c => c.startBar !== clip.startBar), clip]
+        };
+      }
+      return track;
+    }));
+  };
+
+  // Auto-mount initial completed render onto Track 1 if Track 1 has no clips yet
+  useEffect(() => {
+    const checkAndMountLatestRender = async () => {
+      try {
+        const res = await fetch('http://localhost:9090/api/v1/renders');
+        if (!res.ok) return;
+        const renders: { name: string; url: string; sizeBytes: number }[] = await res.json();
+        if (renders.length > 0 && tracks[0] && tracks[0].clips.length === 0) {
+          const latest = renders[0];
+          const audioRes = await fetch(latest.url);
+          if (!audioRes.ok) return;
+          const arrayBuffer = await audioRes.arrayBuffer();
+          const clipId = `clip-init-${Date.now()}`;
+          const decoded = await audioEngine.loadGeneratedAudio(clipId, arrayBuffer);
+          const barDurationSec = (4 * 60 / bpm);
+          const durationBars = Math.max(1, Math.round(decoded.duration / barDurationSec));
+
+          const rawData = decoded.getChannelData(0);
+          const samples = 64;
+          const blockSize = Math.floor(rawData.length / samples);
+          const waveformPoints: number[] = [];
+          for (let i = 0; i < samples; i++) {
+            let sum = 0;
+            for (let j = 0; j < blockSize; j++) {
+              sum += Math.abs(rawData[i * blockSize + j]);
+            }
+            waveformPoints.push(Math.min(1, (sum / blockSize) * 3));
+          }
+
+          const newClip: AudioClip = {
+            id: clipId,
+            name: latest.name.replace('.wav', ''),
+            startBar: 1,
+            durationBars: durationBars,
+            color: tracks[0].color,
+            audioBuffer: decoded,
+            waveformPoints: waveformPoints
+          };
+
+          const newTake: AudioTake = {
+            id: `take-init-${Date.now()}`,
+            name: latest.name.replace('.wav', ''),
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            durationSec: Math.round(decoded.duration),
+            contextAware: true
+          };
+
+          handleMountClipToTrack(tracks[0].id, newClip, newTake);
+          showToast(`Mounted ${latest.name} onto Track 1 (${Math.round(decoded.duration)}s 48kHz Stereo)!`);
+        }
+      } catch (err) {
+        console.warn('Could not auto-mount render:', err);
+      }
+    };
+
+    checkAndMountLatestRender();
+  }, []);
+
+  const handleApplyDirectorScene = async (scene: DirectorSceneState, raga: Raga) => {
     setActiveRaga(raga);
     setBpm(scene.pacingBpm);
-    showToast(`Scored scene: ${scene.sceneTitle} in Raag ${raga.name} (${scene.rasa})!`);
+    
+    // Start global generation
+    setAiStatus({ active: true, model: 'Apple MLX', progress: 5, taskName: 'Connecting to Nāḍ Backend...' });
+    
+    const sceneBars = 32;
+    const durationSec = Math.round(sceneBars * (4 * 60 / scene.pacingBpm));
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Target Track: Prioritize selected track or default to Track 1 (Mood Instrument / Master Score)
+    const targetTrack = tracks.find(t => t.id === selectedTrackId) || tracks[0];
+
+    if (!targetTrack) {
+      setAiStatus({ active: false, model: '', progress: 0, taskName: '' });
+      showToast('No valid track found to receive score.');
+      return;
+    }
+
+    try {
+      setAiStatus({ active: true, model: 'YuE 2 (BF16)', progress: 0, taskName: `Orchestrating ${scene.rasa} Scene...` });
+      
+      const prompt = `Compose a ${scene.rasa} cinematic score in ${raga.name}. Arc: ${scene.arcType}. Tempo: ${scene.pacingBpm} BPM.`;
+
+      // Connect to WebSocket for real-time generation progress
+      const ws = new WebSocket('ws://localhost:9090/ws');
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: 'generate',
+          payload: {
+            modelId: 'yue_2',
+            prompt: prompt,
+            tags: `${scene.rasa}, cinematic score, raag ${raga.name}`,
+            durationSec: durationSec
+          }
+        }));
+      };
+
+      ws.onmessage = async (event) => {
+        // If we receive a binary frame, it's the completed WAV file
+        if (event.data instanceof ArrayBuffer) {
+          setAiStatus({ active: true, model: 'System', progress: 95, taskName: 'Mounting to Timeline...' });
+
+          try {
+            const newClipId = `clip-director-${Date.now()}-${targetTrack.id}`;
+            const audioBuffer = await audioEngine.loadGeneratedAudio(newClipId, event.data);
+
+            const barDurationSec = (4 * 60 / scene.pacingBpm);
+            const clipDurationBars = Math.max(1, Math.round(audioBuffer.duration / barDurationSec));
+
+            // Extract waveform peaks for rich timeline rendering
+            const rawData = audioBuffer.getChannelData(0);
+            const samples = 64;
+            const blockSize = Math.floor(rawData.length / samples);
+            const waveformPoints: number[] = [];
+            for (let i = 0; i < samples; i++) {
+              let sum = 0;
+              for (let j = 0; j < blockSize; j++) {
+                sum += Math.abs(rawData[i * blockSize + j]);
+              }
+              waveformPoints.push(Math.min(1, (sum / blockSize) * 3));
+            }
+
+            const newClip: AudioClip = {
+              id: newClipId,
+              name: `${scene.rasa} Master Score (${raga.name})`,
+              startBar: 1,
+              durationBars: clipDurationBars,
+              color: targetTrack.color,
+              audioBuffer: audioBuffer,
+              waveformPoints: waveformPoints
+            };
+
+            const newTake: AudioTake = {
+              id: `take-director-${Date.now()}-${targetTrack.id}`,
+              name: `Take ${targetTrack.takes.length + 1} (${scene.rasa} Scene - ${raga.name})`,
+              timestamp,
+              durationSec: Math.round(audioBuffer.duration),
+              contextAware: true
+            };
+
+            setTracks(prevTracks => prevTracks.map(track => {
+              if (track.id === targetTrack.id) {
+                return {
+                  ...track,
+                  takes: [...track.takes, newTake],
+                  activeTakeIndex: track.takes.length,
+                  clips: [...track.clips.filter(c => c.startBar !== 1), newClip]
+                };
+              }
+              return track;
+            }));
+
+            showToast(`Scored scene "${scene.sceneTitle}" (${raga.name} / ${scene.rasa}) saved to Renders & mounted on ${targetTrack.name}!`);
+          } catch (err: any) {
+            console.error('Failed to mount generated audio:', err);
+            showToast('Failed to decode audio: ' + (err?.message || err));
+          }
+
+          setAiStatus({ active: false, model: '', progress: 0, taskName: '' });
+          setIsDirectorWizardOpen(false);
+          ws.close();
+          return;
+        }
+
+        // Otherwise, it's a JSON event
+        let msg;
+        try {
+          msg = JSON.parse(event.data);
+        } catch (e) {
+          console.error('WS parse error', e);
+          return;
+        }
+
+        if (msg.type === 'progress') {
+          const pct = Math.round(msg.payload.value * 100);
+          setAiStatus(prev => ({
+            ...prev,
+            active: true,
+            model: 'YuE 2 (BF16)',
+            progress: pct,
+            taskName: `Rendering AI Audio (${pct}%)...`,
+            usedGB: msg.payload.usedGB ?? prev.usedGB,
+            totalGB: msg.payload.totalGB ?? prev.totalGB,
+            pressurePct: msg.payload.pressurePct ?? prev.pressurePct
+          }));
+        } else if (msg.type === 'memory') {
+          setAiStatus(prev => ({
+            ...prev,
+            usedGB: msg.payload.usedGB,
+            totalGB: msg.payload.totalGB,
+            pressurePct: msg.payload.pressurePct
+          }));
+        } else if (msg.type === 'error') {
+          console.error('Backend WS Error:', msg.payload.message);
+          showToast(`Generation Failed: ${msg.payload.message}`);
+          setAiStatus({ active: false, model: '', progress: 0, taskName: '', error: msg.payload.message });
+          ws.close();
+        } else if (msg.type === 'model_state') {
+          if (msg.payload.state === 'loading') {
+            setAiStatus(prev => ({
+              ...prev,
+              taskName: 'Loading YuE 2 (BF16) into Unified Memory...',
+              usedGB: msg.payload.usedGB ?? prev.usedGB,
+              totalGB: msg.payload.totalGB ?? prev.totalGB
+            }));
+          } else if (msg.payload.state === 'generating') {
+            setAiStatus(prev => ({
+              ...prev,
+              taskName: 'Generating Neural Audio on Metal GPU...'
+            }));
+          }
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        showToast('WebSocket connection to backend failed.');
+        setAiStatus({ active: false, model: '', progress: 0, taskName: '', error: 'WebSocket connection failed' });
+      };
+
+    } catch (err: any) {
+      console.error('AI Generation Error:', err);
+      showToast(`Generation Failed: ${err.message}. Make sure the Go backend is running.`);
+      setAiStatus({ active: false, model: '', progress: 0, taskName: '', error: err.message });
+    }
   };
+
 
   const handleInsertTransition = (fx: TransitionFXState) => {
     sessionHistory.pushState(getCurrentSessionState(), `Insert ${fx.bars}-bar ${fx.type}`, 'clip');
@@ -878,6 +1137,7 @@ export function App() {
         onSaHzChange={setBaseSaHz}
         activeRaga={activeRaga}
         onRagaSelect={setActiveRaga}
+        aiStatus={aiStatus}
         activeTala={activeTala}
         onTalaSelect={setActiveTala}
         selectedRasa={selectedRasa}
@@ -890,6 +1150,7 @@ export function App() {
         onOpenShrutiMandala={() => setIsShrutiMandalaOpen(true)}
         onOpenAIOrchestrator={() => handleOpenAIOrchestrator()}
         onOpenStemForge={() => setIsStemForgeOpen(true)}
+        onOpenModelLibrary={() => setIsModelLibraryOpen(true)}
         onOpenSpatialAudio={() => handleOpenSpatialAudio()}
         onSaveProject={handleSaveProject}
         onExportMaster={handleExportMaster}
@@ -914,12 +1175,22 @@ export function App() {
         metronomeTimbre={metronomeTimbre}
         onMetronomeTimbreChange={setMetronomeTimbre}
         onStop={handleStopPlayback}
+        onOpenRenders={() => setIsRendersModalOpen(true)}
       />
 
       {/* Center Console (Stretched Studio Toolbar) */}
       <div className="shrink-0 mx-3 my-1.5 px-3 py-1 rounded-xl bg-[#0a0d14]/90 backdrop-blur-md border border-white/[0.08] shadow-md flex items-center justify-between gap-2 overflow-x-auto no-scrollbar z-30">
         {/* Group 1: Arranger & Production Suites */}
         <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={() => setIsRendersModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 border border-amber-500/50 text-amber-200 text-xs font-bold transition cursor-pointer shadow-sm hover:border-amber-400 active:scale-95"
+            title="Browse, audition and mount audio score renders saved in Renders/"
+          >
+            <Folder className="w-3.5 h-3.5 text-amber-400" />
+            <span>Renders</span>
+          </button>
+
           <button
             onClick={() => setIsArrangerOpen(true)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/50 hover:bg-amber-900/60 border border-amber-500/35 text-amber-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-amber-400/50 active:scale-95"
@@ -1204,10 +1475,11 @@ export function App() {
 
       {/* 5. Modals & Drawers */}
       <DirectorsWizardModal
-        isOpen={isDirectorWizardOpen}
+        isOpen={isDirectorWizardOpen || aiStatus?.active}
         onClose={() => setIsDirectorWizardOpen(false)}
         baseSaHz={baseSaHz}
         onApplyScene={handleApplyDirectorScene}
+        aiStatus={aiStatus}
       />
 
       <AddTrackModal
@@ -1349,6 +1621,15 @@ export function App() {
         bpm={bpm}
         totalBars={totalBars}
         onTotalBarsChange={setTotalBars}
+      />
+
+      <RendersModal
+        isOpen={isRendersModalOpen}
+        onClose={() => setIsRendersModalOpen(false)}
+        tracks={tracks}
+        onMountClipToTrack={handleMountClipToTrack}
+        showToast={showToast}
+        bpm={bpm}
       />
 
     </div>

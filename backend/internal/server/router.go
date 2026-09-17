@@ -5,7 +5,13 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -37,6 +43,9 @@ func NewRouter(h *Handler) http.Handler {
 		r.Post("/generate", h.handleGenerate)
 		r.Get("/models", h.handleListModels)
 		r.Get("/memory", h.handleMemory)
+		r.Get("/renders", h.handleListRenders)
+		r.Get("/renders/{filename}", h.handleGetRenderFile)
+		r.Head("/renders/{filename}", h.handleGetRenderFile)
 	})
 
 	// WebSocket endpoint for real-time progress + audio streaming
@@ -55,7 +64,7 @@ func NewRouter(h *Handler) http.Handler {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, HEAD, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -138,9 +147,68 @@ func (h *Handler) handleMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+// RenderInfo describes a rendered audio file in Renders/
+type RenderInfo struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	SizeBytes int64     `json:"sizeBytes"`
+	ModTime   time.Time `json:"modTime"`
+	URL       string    `json:"url"`
+}
+
+func (h *Handler) handleListRenders(w http.ResponseWriter, r *http.Request) {
+	rendersDir := "/Users/mrigank/.gemini/antigravity-ide/scratch/nadabrahma/Renders"
+	entries, err := os.ReadDir(rendersDir)
+	if err != nil {
+		writeJSON(w, http.StatusOK, []RenderInfo{})
+		return
+	}
+	var list []RenderInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".wav") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		list = append(list, RenderInfo{
+			Name:      entry.Name(),
+			Path:      filepath.Join(rendersDir, entry.Name()),
+			SizeBytes: info.Size(),
+			ModTime:   info.ModTime(),
+			URL:       fmt.Sprintf("http://localhost:9090/api/v1/renders/%s", entry.Name()),
+		})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ModTime.After(list[j].ModTime)
+	})
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) handleGetRenderFile(w http.ResponseWriter, r *http.Request) {
+	filename := filepath.Base(chi.URLParam(r, "filename"))
+	rendersDir := "/Users/mrigank/.gemini/antigravity-ide/scratch/nadabrahma/Renders"
+	filePath := filepath.Join(rendersDir, filename)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		// Also check Obsidian DAW Renders folder
+		obsidianPath := filepath.Join("/Users/mrigank/Documents/Daw/DAW/Renders", filename)
+		if _, err := os.Stat(obsidianPath); err == nil {
+			filePath = obsidianPath
+		} else {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Accept-Ranges", "bytes")
+	http.ServeFile(w, r, filePath)
+}
+
 // writeJSON is a convenience helper for JSON responses.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+

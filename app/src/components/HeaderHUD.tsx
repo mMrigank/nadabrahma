@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Play, Pause, Square, Repeat, Mic, Volume2, 
   Sparkles, Sliders, Music, Radio, ChevronDown, Layers, Activity, Compass, Cpu,
-  Scissors, Download, RotateCcw, RotateCw, GitBranch
+  Scissors, Download, RotateCcw, RotateCw, GitBranch, VolumeX, Folder
 } from 'lucide-react';
 import { Raga, Tala, RasaType, MetronomeTimbre } from '../types/daw';
 import { RAGA_DATABASE, TALA_DATABASE, hzToMidiWithCents } from '../lib/ragaEngine';
@@ -54,6 +54,10 @@ interface HeaderHUDProps {
   onTimeSignatureChange?: (ts: string) => void;
   onSaveProject?: () => void;
   onExportMaster?: () => void;
+  onOpenModelLibrary?: () => void;
+  onOpenRenders?: () => void;
+  aiStatus?: { active: boolean; model: string; progress: number; taskName: string; };
+  onStop?: () => void;
 }
 
 export const HeaderHUD: React.FC<HeaderHUDProps> = ({
@@ -102,7 +106,10 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   onMetronomeTimbreChange,
   onStop,
   onSaveProject,
-  onExportMaster
+  onExportMaster,
+  onOpenModelLibrary,
+  onOpenRenders,
+  aiStatus
 }) => {
   const [isTanpuraActive, setIsTanpuraActive] = useState(false);
   const [isDetectingSa, setIsDetectingSa] = useState(false);
@@ -145,8 +152,8 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-extrabold tracking-widest text-base text-slate-100 font-serif shadow-sm">
-                NĀḌ
+              <span className="font-extrabold tracking-widest text-base text-slate-100 font-sans shadow-sm">
+                NADABRAHMA
               </span>
             </div>
             <div className="text-[10px] text-slate-400 font-mono tracking-tight uppercase opacity-80">
@@ -170,6 +177,11 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
             <div className="absolute top-10 left-0 w-60 glass-dropdown rounded-xl p-2 z-[9999] flex flex-col gap-1 border border-slate-700/80 shadow-2xl bg-[#090c13]/98 backdrop-blur-2xl">
               <div className="text-[10px] text-slate-500 font-semibold uppercase px-2 py-1 tracking-wider border-b border-slate-800/60 mb-1">Launchers</div>
               
+              {onOpenModelLibrary && (
+                <button onClick={() => { onOpenModelLibrary(); setShowEnginesDropdown(false); }} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-800 text-slate-300 transition text-left">
+                  <span className="w-3.5 h-3.5 flex items-center justify-center text-xs text-amber-500/80"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-hard-drive"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg></span> <span>Local AI Model Library</span>
+                </button>
+              )}
               {onOpenExtendedSpectrum && (
                 <button onClick={() => { onOpenExtendedSpectrum(); setShowEnginesDropdown(false); }} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-teal-900/40 text-teal-300 transition text-left">
                   <Activity className="w-3.5 h-3.5" /> <span>96k DSP Inspector</span>
@@ -205,9 +217,26 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" /> <span>Director’s Scene Wizard</span>
                 </button>
               )}
+              {onOpenRenders && (
+                <button onClick={() => { onOpenRenders(); setShowEnginesDropdown(false); }} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-amber-950/60 text-amber-300 transition text-left">
+                  <Folder className="w-3.5 h-3.5 text-amber-400" /> <span>Audio Renders Folder</span>
+                </button>
+              )}
             </div>
           )}
         </div>
+
+        {/* Dedicated Quick-Access Renders Folder Button */}
+        {onOpenRenders && (
+          <button
+            onClick={onOpenRenders}
+            title="Browse, audition and mount generated audio renders from Renders/"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-600/40 transition-all duration-150 active:scale-95 cursor-pointer font-medium shadow-sm"
+          >
+            <Folder className="w-3.5 h-3.5 text-amber-400" />
+            <span>Renders</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Central Transport Controls (Play, BPM, Tala Beads) */}
@@ -612,18 +641,48 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
           )}
         </div>
 
-        {/* Tanpura Drone Toggle */}
-        <button
-          onClick={handleToggleTanpura}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition cursor-pointer font-medium ${
-            isTanpuraActive 
-              ? 'bg-amber-500/15 text-amber-200/90 border-amber-600/35 shadow-none' 
-              : 'bg-slate-900 hover:bg-slate-850 text-slate-400 border-slate-700/80'
-          }`}
-        >
-          <Volume2 className={`w-3.5 h-3.5 ${isTanpuraActive ? 'text-amber-300/80' : 'text-slate-500/70'}`} />
-          <span>Tanpura: {isTanpuraActive ? 'ON' : 'OFF'}</span>
-        </button>
+       <div className="h-5 w-[1px] bg-slate-800" />
+
+        {/* Dynamic Model Status Bar OR Tanpura/MIDI Controls */}
+        {aiStatus?.active ? (
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-900/20 border border-amber-500/30 rounded-lg min-w-[200px] shadow-[0_0_15px_rgba(245,158,11,0.1)]">
+            <div className="flex-1">
+              <div className="flex justify-between items-end text-[10px] font-mono text-amber-300 mb-1 leading-none">
+                <span className="font-semibold">{aiStatus.model}</span>
+                <span>{Math.round(aiStatus.progress)}%</span>
+              </div>
+              <div className="h-1.5 bg-slate-900 rounded-full w-full overflow-hidden border border-slate-700/50">
+                <div className="h-full bg-gradient-to-r from-amber-600 via-amber-400 to-amber-500 rounded-full shadow-[0_0_8px_rgba(245,158,11,0.6)] transition-all duration-300 ease-out" style={{ width: `${aiStatus.progress}%` }} />
+              </div>
+              <div className="text-[9px] text-amber-400/80 truncate mt-1 leading-none font-sans flex items-center gap-1">
+                <Sparkles className="w-2.5 h-2.5 animate-pulse" />
+                {aiStatus.taskName}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            {/* Background Tanpura Toggle */}
+            <button
+              onClick={() => setIsTanpuraActive(!isTanpuraActive)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition font-medium cursor-pointer ${
+                isTanpuraActive
+                  ? 'bg-amber-900/40 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                  : 'bg-slate-900/60 border-slate-700/80 text-slate-400 hover:bg-slate-800'
+              }`}
+            >
+              {isTanpuraActive ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5 opacity-50" />}
+              <span>Tanpura: {isTanpuraActive ? 'ON' : 'OFF'}</span>
+            </button>
+
+            {/* MIDI Input Status (Mock) */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-900/50 text-emerald-400">
+              <Radio className="w-3.5 h-3.5" />
+              <span className="font-bold">MIDI</span>
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-1" />
+            </div>
+          </div>
+        )}
 
         {/* Hardware MIDI & MPE Controller Launcher */}
         {onOpenMidiController && (

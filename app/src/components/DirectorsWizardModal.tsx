@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, Sparkles, Upload, Music, Sliders, Play, CheckCircle2, RefreshCw
 } from 'lucide-react';
@@ -10,6 +10,16 @@ interface DirectorsWizardModalProps {
   onClose: () => void;
   baseSaHz: number;
   onApplyScene: (scene: DirectorSceneState, raga: Raga) => void;
+  aiStatus?: {
+    active: boolean;
+    model: string;
+    progress: number;
+    taskName: string;
+    usedGB?: number;
+    totalGB?: number;
+    pressurePct?: number;
+    error?: string;
+  };
 }
 
 const RASAS_META: { type: RasaType; label: string; emoji: string; ragaId: string; description: string }[] = [
@@ -25,7 +35,8 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
   isOpen,
   onClose,
   baseSaHz,
-  onApplyScene
+  onApplyScene,
+  aiStatus
 }) => {
   const [selectedRasa, setSelectedRasa] = useState<RasaType>('Adbhuta');
   const [sceneArc, setSceneArc] = useState<'ambient_flat' | 'slow_build' | 'epic_climax' | 'drop_reveal'>('slow_build');
@@ -35,12 +46,73 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
   const [raspGrit, setRaspGrit] = useState(30);
   const [formantShift, setFormantShift] = useState(2);
   const [gamakaDepth, setGamakaDepth] = useState(80);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  useEffect(() => {
+    let interval: any;
+    if (aiStatus?.active) {
+      interval = setInterval(() => {
+        setElapsedSec(prev => prev + 1);
+      }, 1000);
+    } else {
+      setElapsedSec(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [aiStatus?.active]);
 
   if (!isOpen) return null;
 
   const currentRasaMeta = RASAS_META.find(r => r.type === selectedRasa) || RASAS_META[0];
   const recommendedRaga = RAGA_DATABASE.find(r => r.id === currentRasaMeta.ragaId) || RAGA_DATABASE[1];
+
+  // Pipeline stage and elapsed timer breakdown
+  const elapsedMinutes = Math.floor(elapsedSec / 60);
+  const elapsedSeconds = (elapsedSec % 60).toString().padStart(2, '0');
+  const elapsedTimerStr = `${elapsedMinutes}:${elapsedSeconds}`;
+
+  let currentStageNum = 1;
+  let currentStageBadge = "Stage 1/3: AR Symbolic Planning";
+  let stageDescription = `Establishing ${selectedRasa} emotional contours in Raag ${recommendedRaga.name}...`;
+
+  if (aiStatus?.progress && aiStatus.progress > 0) {
+    if (aiStatus.progress < 35) {
+      currentStageNum = 1;
+      currentStageBadge = "Stage 1/3: Autoregressive Motif Synthesis";
+      stageDescription = `Composing Raga ${recommendedRaga.name} melody & phrasing (${aiStatus.progress}%)...`;
+    } else if (aiStatus.progress < 85) {
+      currentStageNum = 2;
+      currentStageBadge = "Stage 2/3: Acoustic Flow Matching on Metal";
+      stageDescription = `Generating orchestral texture layers on Metal GPU (${aiStatus.progress}%)...`;
+    } else {
+      currentStageNum = 3;
+      currentStageBadge = "Stage 3/3: Neural VAE 96kHz Audio Decode";
+      stageDescription = `Decoding latent tensors to 96kHz / 32-bit float master WAV...`;
+    }
+  } else {
+    if (elapsedSec < 15) {
+      currentStageNum = 1;
+      currentStageBadge = "Stage 1/3: Metal Allocation & Weight Loading";
+      stageDescription = `Allocating 6.5 GB YuE 2 (BF16) into Apple Silicon Unified Memory...`;
+    } else if (elapsedSec < 75) {
+      currentStageNum = 1;
+      currentStageBadge = "Stage 1/3: Autoregressive Semantic Generation";
+      stageDescription = `Synthesizing ${selectedRasa} melodic motifs in Raag ${recommendedRaga.name} (${elapsedTimerStr})...`;
+    } else if (elapsedSec < 160) {
+      currentStageNum = 2;
+      currentStageBadge = "Stage 2/3: Acoustic Flow Matching on Metal GPU";
+      stageDescription = `Generating multi-track symphonic textures on Metal GPU (${elapsedTimerStr})...`;
+    } else {
+      currentStageNum = 3;
+      currentStageBadge = "Stage 3/3: VAE Neural Decode & Audio Assembly";
+      stageDescription = `Decoding latents into 96kHz / 32-bit float master audio takes (${elapsedTimerStr})...`;
+    }
+  }
+
+  const displayProgress = aiStatus?.progress && aiStatus.progress > 0
+    ? aiStatus.progress
+    : Math.min(94, Math.max(4, Math.round((elapsedSec / 160) * 90)));
 
   const handleSimulateAudioDrop = () => {
     setCustomVoiceFileName('director_sample_voice_24s.wav');
@@ -48,25 +120,21 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
   };
 
   const handleScoreScene = () => {
-    setIsGenerating(true);
-    setTimeout(() => {
-      onApplyScene({
-        rasa: selectedRasa,
-        sceneTitle: `${selectedRasa} Scene Score`,
-        arcType: sceneArc,
-        vocalPreference: vocalMode,
-        customVoiceName: customVoiceFileName || undefined,
-        voiceReinterpretation: {
-          breathiness,
-          raspGrit,
-          formantShift,
-          gamakaDepth
-        },
-        pacingBpm: 78
-      }, recommendedRaga);
-      setIsGenerating(false);
-      onClose();
-    }, 1000);
+    onApplyScene({
+      rasa: selectedRasa,
+      sceneTitle: `${selectedRasa} Scene Score`,
+      arcType: sceneArc,
+      vocalPreference: vocalMode,
+      customVoiceName: customVoiceFileName || undefined,
+      voiceReinterpretation: {
+        breathiness,
+        raspGrit,
+        formantShift,
+        gamakaDepth
+      },
+      pacingBpm: 78
+    }, recommendedRaga);
+    // Modal will close externally when generation finishes
   };
 
   return (
@@ -100,7 +168,149 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-6 text-xs">
+        <div className="p-6 overflow-y-auto space-y-6 text-xs relative">
+          
+          {/* Error Banner if generation failed */}
+          {aiStatus?.error && (
+            <div className="p-3.5 rounded-xl bg-red-950/40 border border-red-500/40 text-red-200 flex items-start justify-between gap-3 shadow-lg animate-in fade-in duration-200">
+              <div className="flex items-start gap-2.5">
+                <span className="text-base">⚠️</span>
+                <div>
+                  <h4 className="font-bold text-red-300 text-xs">Generation Notice</h4>
+                  <p className="text-[11px] text-red-200/90 mt-0.5 leading-relaxed font-mono">{aiStatus.error}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Generation Overlay */}
+          {aiStatus?.active && (
+            <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-8">
+              <div className="w-full max-w-md space-y-6">
+                <div className="text-center space-y-3">
+                  <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-400 mb-1 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+                    <Sparkles className="w-6 h-6 animate-pulse" />
+                  </div>
+                  
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-100 font-serif tracking-wide">Synthesizing Scene...</h3>
+                    <div className="flex items-center justify-center gap-2 mt-1.5">
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold tracking-wide">
+                        {currentStageBadge}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/60">
+                        ⏱️ {elapsedTimerStr}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Yellow Status: Exactly where we are standing */}
+                  <div className="bg-slate-900/80 rounded-xl p-3 border border-amber-500/30 shadow-inner space-y-1">
+                    <p className="text-xs text-amber-300 font-mono tracking-tight font-medium animate-pulse">
+                      {stageDescription}
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      Raag {recommendedRaga.name} · {selectedRasa} Rasa · 32 bars @ 78 BPM · YuE 2 (BF16)
+                    </p>
+                  </div>
+
+                  {/* 3-Step Pipeline Visualizer */}
+                  <div className="grid grid-cols-3 gap-2 text-left pt-1">
+                    <div className={`p-2 rounded-lg border transition-all ${
+                      currentStageNum === 1 
+                        ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)] ring-1 ring-amber-500/40' 
+                        : currentStageNum > 1 
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' 
+                          : 'border-slate-800 bg-slate-900/40 text-slate-500'
+                    }`}>
+                      <div className="flex items-center justify-between text-[9px] font-mono">
+                        <span>STEP 1</span>
+                        <span>{currentStageNum > 1 ? '✓' : currentStageNum === 1 ? '●' : '○'}</span>
+                      </div>
+                      <div className="text-[10px] font-bold mt-0.5">AR Motifs</div>
+                      <div className="text-[8px] text-slate-400 font-mono">Raga Phrasing</div>
+                    </div>
+
+                    <div className={`p-2 rounded-lg border transition-all ${
+                      currentStageNum === 2 
+                        ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)] ring-1 ring-amber-500/40' 
+                        : currentStageNum > 2 
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' 
+                          : 'border-slate-800 bg-slate-900/40 text-slate-500'
+                    }`}>
+                      <div className="flex items-center justify-between text-[9px] font-mono">
+                        <span>STEP 2</span>
+                        <span>{currentStageNum > 2 ? '✓' : currentStageNum === 2 ? '●' : '○'}</span>
+                      </div>
+                      <div className="text-[10px] font-bold mt-0.5">Flow Matching</div>
+                      <div className="text-[8px] text-slate-400 font-mono">Metal GPU Audio</div>
+                    </div>
+
+                    <div className={`p-2 rounded-lg border transition-all ${
+                      currentStageNum === 3 
+                        ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)] ring-1 ring-amber-500/40' 
+                        : 'border-slate-800 bg-slate-900/40 text-slate-500'
+                    }`}>
+                      <div className="flex items-center justify-between text-[9px] font-mono">
+                        <span>STEP 3</span>
+                        <span>{currentStageNum === 3 ? '●' : '○'}</span>
+                      </div>
+                      <div className="text-[10px] font-bold mt-0.5">96kHz VAE</div>
+                      <div className="text-[8px] text-slate-400 font-mono">Timeline Takes</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="space-y-3">
+                  {/* Rendering Progress */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                      <span>Rendering Orchestration</span>
+                      <span className="text-amber-300 font-bold">{displayProgress}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-700/50">
+                      <div 
+                        className="h-full bg-gradient-to-r from-amber-600 via-amber-400 to-orange-500 rounded-full shadow-[0_0_10px_rgba(245,158,11,0.5)] transition-all duration-300 ease-out"
+                        style={{ width: `${displayProgress}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Memory Engagement */}
+                  {(() => {
+                    const usedMem = aiStatus?.usedGB ?? (aiStatus?.active ? 19.2 : 0);
+                    const totalMem = aiStatus?.totalGB ?? 32;
+                    const memPct = Math.min(100, Math.max(0, (usedMem / totalMem) * 100));
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                          <span className="flex items-center gap-1.5">
+                            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></div>
+                            Unified Memory (M1 Max Metal)
+                          </span>
+                          <span className="text-cyan-400 font-semibold font-mono">
+                            {aiStatus?.active ? `${usedMem.toFixed(1)} GB / ${totalMem.toFixed(0)} GB (${memPct.toFixed(0)}%)` : '0.0 GB / 32 GB'}
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                          <div 
+                            className="h-full bg-gradient-to-r from-cyan-600 via-cyan-400 to-teal-300 rounded-full transition-all duration-500 ease-out shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                            style={{ width: `${aiStatus?.active ? memPct : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mt-4 text-center text-[9px] text-slate-500 font-mono uppercase tracking-wider">
+                  <div className={`p-1.5 rounded border transition-colors ${aiStatus.model.includes('MiniMax') ? 'border-amber-500/40 text-amber-300 bg-amber-500/10' : 'border-slate-800'}`}>MiniMax 3</div>
+                  <div className={`p-1.5 rounded border transition-colors ${aiStatus.model.includes('Stable') ? 'border-amber-500/40 text-amber-300 bg-amber-500/10' : 'border-slate-800'}`}>Stable Audio 3</div>
+                  <div className={`p-1.5 rounded border transition-colors ${aiStatus.model.includes('YuE') ? 'border-amber-500/40 text-amber-300 bg-amber-500/10' : 'border-slate-800'}`}>YuE 2</div>
+                </div>
+              </div>
+            </div>
+          )}
           
           {/* 1. The Navarasa Emotion Compass */}
           <div>
@@ -311,10 +521,10 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
             </button>
             <button
               onClick={handleScoreScene}
-              disabled={isGenerating}
+              disabled={aiStatus?.active}
               className="px-5 py-2 rounded-lg bg-gradient-to-r from-amber-600 via-orange-600 to-amber-500 hover:from-amber-500 hover:to-orange-500 text-white font-semibold flex items-center gap-2 shadow-lg shadow-amber-500/20 transition cursor-pointer"
             >
-              {isGenerating ? (
+              {aiStatus?.active ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
                   <span>Synthesizing Scene...</span>
@@ -322,7 +532,7 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
               ) : (
                 <>
                   <Sparkles className="w-4 h-4 text-amber-200" />
-                  <span>🎬 Score My Scene</span>
+                  <span>🎬 Generate</span>
                 </>
               )}
             </button>

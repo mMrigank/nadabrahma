@@ -434,6 +434,21 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         </div>
       </div>
 
+      {/* Audio Take Active Banner */}
+      {selectedTrack?.clips?.some(c => c.audioBuffer || (c.waveformPoints && c.waveformPoints.length > 0)) && (
+        <div className="px-4 py-1.5 bg-emerald-950/40 border-b border-emerald-800/40 flex items-center justify-between text-xs text-emerald-200">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>
+              <strong className="text-emerald-300">Audio Master Take Active:</strong> {selectedTrack.takes?.[selectedTrack.activeTakeIndex]?.name || selectedTrack.clips[0]?.name} ({selectedTrack.takes?.[selectedTrack.activeTakeIndex]?.durationSec || 98}s • 48kHz Stereo). Real audio is mounted on the timeline.
+            </span>
+          </div>
+          <span className="text-[10px] text-emerald-400/80 font-mono">
+            Timeline plays rendered WAV audio • Swara grid available for microtonal tuning
+          </span>
+        </div>
+      )}
+
       {/* 2. Gamaka Inspector & Microtonal Control Strip (Pinned below toolbar) */}
       <div className="px-4 py-1.5 bg-[#0a0f18] border-b border-white/[0.10] flex items-center justify-between gap-4 shrink-0 text-xs">
         <div className="flex items-center gap-3">

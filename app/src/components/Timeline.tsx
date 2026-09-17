@@ -32,6 +32,7 @@ interface TimelineProps {
   onOpenStemForge?: (trackId?: string) => void;
   onOpenSpatialAudio?: (trackId?: string) => void;
   onOpenMidiController?: () => void;
+  onOpenPlugins?: (trackId?: string) => void;
   sections?: ArrangementSection[];
   onOpenArranger?: () => void;
   timeSignature?: string;
