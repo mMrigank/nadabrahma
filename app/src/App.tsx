@@ -934,6 +934,143 @@ export function App() {
         onStop={handleStopPlayback}
       />
 
+      {/* Center Console (Stretched Studio Toolbar) */}
+      <div className="shrink-0 mx-3 my-1.5 px-3 py-1 rounded-xl bg-[#0a0d14]/90 backdrop-blur-md border border-white/[0.08] shadow-md flex items-center justify-between gap-2 overflow-x-auto no-scrollbar z-30">
+        {/* Group 1: Arranger & Production Suites */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={() => setIsArrangerOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/50 hover:bg-amber-900/60 border border-amber-500/35 text-amber-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-amber-400/50 active:scale-95"
+            title="Open Intelligent Arrangement Assistant & Section Arranger"
+          >
+            <span>📐</span>
+            <span>Arranger</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenPlugins()}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-950/50 hover:bg-indigo-900/60 border border-indigo-500/35 text-indigo-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-indigo-400/50 active:scale-95"
+            title="Open VST3 / AU Audio Plugin Host & Wasm DSP Sandboxing Suite"
+          >
+            <span>🎛️</span>
+            <span>FX Rack</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenAIOrchestrator()}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/35 text-purple-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-purple-400/50 active:scale-95"
+            title="Open Apple MLX Multi-Model AI Suite Orchestrator"
+          >
+            <Cpu className="w-3.5 h-3.5 text-purple-400" />
+            <span>AI Suite (MLX)</span>
+          </button>
+
+          <button
+            onClick={() => setIsStemForgeOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/35 text-cyan-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-cyan-400/50 active:scale-95"
+            title="Open StemForge AI Stem Separation & 96kHz Master Exporter"
+          >
+            <Scissors className="w-3.5 h-3.5 text-cyan-400" />
+            <span>StemForge & Export</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenSpatialAudio()}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-950/40 hover:bg-orange-900/50 border border-orange-500/30 text-orange-200 text-xs font-medium transition cursor-pointer shadow-sm hover:border-orange-400/50 active:scale-95"
+            title="Open The Owl 3D Spatial Audio Bus & Ambisonics Panner"
+          >
+            <Compass className="w-3.5 h-3.5 text-orange-400" />
+            <span>3D Spatial</span>
+          </button>
+        </div>
+
+        <div className="h-4 w-px bg-white/[0.08] shrink-0 mx-0.5" />
+
+        {/* Group 2: Musicology & Microtonal Engines */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={() => setIsDirectorWizardOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/90 hover:bg-stone-850 border border-amber-600/25 text-amber-200/90 text-xs font-medium transition cursor-pointer active:scale-95"
+            title="Director's Scene Wizard & Rasa Emotion Modeler"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>Director (9 Rasas)</span>
+          </button>
+
+          <button
+            onClick={() => setIsShrutiMandalaOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/90 hover:bg-stone-850 border border-amber-600/30 text-amber-200 text-xs font-mono font-medium transition cursor-pointer active:scale-95"
+            title="22 Shrutis Just Intonation & Continuous Sa Hub"
+          >
+            <span>🪷</span>
+            <span>22 Shrutis & Sa</span>
+          </button>
+
+          <button
+            onClick={() => setIsVagdhenuLyricsOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/35 hover:bg-amber-900/45 border border-amber-600/30 text-amber-200 text-xs font-serif font-medium transition cursor-pointer active:scale-95"
+            title="Vedic Sanskrit Lyrics & Teleprompter (Vāgdhenu Zero-Schwa Deletion)"
+          >
+            <span>📿</span>
+            <span>Vedic Lyrics</span>
+          </button>
+
+          <button
+            onClick={() => setIsRisersDropsOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/30 hover:bg-rose-900/40 border border-rose-600/25 text-rose-200/90 text-xs font-medium transition cursor-pointer active:scale-95"
+            title="Risers, Drops & Braam Generator (Track 5)"
+          >
+            <span>⚡</span>
+            <span>Risers & Drops</span>
+          </button>
+        </div>
+
+        <div className="h-4 w-px bg-white/[0.08] shrink-0 mx-0.5" />
+
+        {/* Group 3: Workstation Monitoring & Views */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={() => setIsSpectrumModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-950/40 hover:bg-teal-900/50 border border-teal-600/30 text-teal-300 text-xs font-medium transition cursor-pointer active:scale-95"
+            title="Extended Spectrum 96kHz DSP Inspector (10Hz-48kHz)"
+          >
+            <Activity className="w-3.5 h-3.5 text-teal-400" />
+            <span>96k DSP</span>
+          </button>
+
+          <button
+            onClick={() => setIsSnapshotModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/45 hover:bg-emerald-900/55 border border-emerald-500/35 text-emerald-200 text-xs font-medium transition cursor-pointer shadow-sm active:scale-95"
+            title="Open Session Snapshots, Branch Trees & Bundle Manager"
+          >
+            <GitBranch className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Snapshots</span>
+          </button>
+
+          <button
+            onClick={() => setIsAddTrackOpen(true)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-slate-300 text-xs font-medium transition cursor-pointer active:scale-95"
+            title="Add New Multitrack Channel"
+          >
+            <Plus className="w-3.5 h-3.5 text-amber-400" />
+            <span>Track ({tracks.length})</span>
+          </button>
+
+          <button
+            onClick={() => setIsPianoRollOpen(!isPianoRollOpen)}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-medium transition cursor-pointer shadow-sm active:scale-95 ${
+              isPianoRollOpen
+                ? 'bg-amber-500/25 text-amber-200 border-amber-500/50 font-semibold'
+                : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:bg-slate-850 hover:text-slate-200'
+            }`}
+            title="Toggle Bottom Swara Piano Roll & Gamaka Modeler"
+          >
+            <Music className="w-3.5 h-3.5 text-amber-400" />
+            <span>Swara Piano Roll</span>
+          </button>
+        </div>
+      </div>
+
       {/* 2. Main Timeline Workspace */}
       <div className="flex-1 flex flex-col min-h-0 relative">
         <Timeline
@@ -964,126 +1101,7 @@ export function App() {
           onOpenArranger={() => setIsArrangerOpen(true)}
         />
 
-        {/* Floating Quick Action Drawer Bar (Center Bottom of Timeline) */}
-        <div className="absolute bottom-3 left-1/2 transform -translate-x-1/2 z-20 flex items-center gap-2 px-3.5 py-1.5 rounded-2xl bg-slate-950/90 backdrop-blur-md border border-slate-800/80 shadow-2xl">
-          <button
-            onClick={() => setIsArrangerOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open Intelligent Arrangement Assistant & Section Arranger"
-          >
-            Arranger
-          </button>
-
-          <button
-            onClick={() => handleOpenPlugins()}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/70 border border-indigo-500/40 text-indigo-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open VST3 / AU Audio Plugin Host & Wasm DSP Sandboxing Suite"
-          >
-            FX Rack
-          </button>
-
-          <button
-            onClick={() => handleOpenAIOrchestrator()}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-purple-950/60 hover:bg-purple-900/70 border border-purple-500/40 text-purple-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open Apple MLX Multi-Model AI Suite Orchestrator"
-          >
-            AI Suite (MLX)
-          </button>
-
-          <button
-            onClick={() => setIsStemForgeOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-500/40 text-cyan-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open StemForge AI Stem Separation & 96kHz Master Exporter"
-          >
-            StemForge & Export
-          </button>
-
-          <button
-            onClick={() => handleOpenSpatialAudio()}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open The Owl 3D Spatial Audio Bus & Ambisonics Panner"
-          >
-            3D Spatial Radar
-          </button>
-
-          <button
-            onClick={() => setIsDirectorWizardOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-stone-900 hover:bg-stone-850 border border-amber-600/25 text-amber-200/90 text-xs font-medium transition cursor-pointer"
-          >
-            Director's Mode (9 Rasas)
-          </button>
-
-          <button
-            onClick={() => setIsShrutiMandalaOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-stone-900 hover:bg-stone-850 border border-amber-600/35 text-amber-200 text-xs font-mono font-medium transition cursor-pointer"
-          >
-            22 Shrutis & Sa Hub
-          </button>
-
-          <button
-            onClick={() => setIsVagdhenuLyricsOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-950/40 hover:bg-amber-900/50 border border-amber-600/35 text-amber-200 text-xs font-serif font-medium transition cursor-pointer"
-          >
-            Vedic Lyrics (Vāgdhenu)
-          </button>
-
-          <button
-            onClick={() => setIsRisersDropsOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 text-rose-200/80 text-xs font-medium transition cursor-pointer"
-          >
-            Track 5 (Risers & Drops)
-          </button>
-
-          <button
-            onClick={() => setIsSpectrumModalOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-teal-950/40 hover:bg-teal-900/50 border border-teal-600/30 text-teal-300 text-xs font-medium transition cursor-pointer"
-          >
-            96k DSP Pipeline
-          </button>
-
-          <button
-            onClick={() => setIsAddTrackOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 text-xs font-medium transition cursor-pointer"
-          >
-            Add Track ({tracks.length}/40+)
-          </button>
-
-          <button
-            onClick={() => setIsMasterMixerOpen(!isMasterMixerOpen)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 text-xs font-medium transition cursor-pointer"
-          >
-            Master & 3D Spatial
-          </button>
-
-          <button
-            onClick={() => setIsSnapshotModalOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open Session Snapshots, Branch Trees & Bundle Manager"
-          >
-            Snapshots ({activeBranchName})
-          </button>
-
-          <button
-            onClick={() => setIsMidiModalOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/40 text-emerald-200 text-xs font-medium transition cursor-pointer shadow-sm"
-            title="Open Hardware MIDI & MPE Expressive Touch Suite"
-          >
-            MIDI & MPE {midiDeviceCount > 0 && `(${midiDeviceCount})`}
-          </button>
-
-          <div className="w-px h-4 bg-slate-800 mx-1"></div>
-
-          <button
-            onClick={() => setIsPianoRollOpen(!isPianoRollOpen)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-xs font-medium transition cursor-pointer ${
-              isPianoRollOpen
-                ? 'bg-amber-600/85 hover:bg-amber-600 text-slate-950 border-amber-600/50 font-semibold'
-                : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-850 hover:text-slate-200'
-            }`}
-          >
-            Swara Piano Roll
-          </button>
-        </div>
+        
       </div>
 
       {/* 3. Bottom Swara Piano Roll Drawer (Moved up, expanded height, zero overlap) */}

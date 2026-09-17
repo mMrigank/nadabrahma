@@ -1450,7 +1450,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                 <div 
                   key={barIdx} 
                   style={{ width: `${barWidth}px` }}
-                  className={`h-full shrink-0 flex flex-col justify-center px-1 font-mono text-[10px] ${barIdx === 0 ? 'border-l border-r' : 'border-r'} ${
+                  className={`h-full shrink-0 flex flex-col justify-center ${barIdx === 0 ? 'pl-2.5 pr-1' : 'px-1'} font-mono text-[10px] border-r ${
                     isSam 
                       ? 'border-white/[0.15] text-amber-200/90 font-medium bg-amber-500/[0.02]' 
                       : 'border-white/[0.05] text-slate-500'
@@ -1887,7 +1887,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             <div 
                               key={bIdx}
                               style={{ width: `${barWidth}px` }}
-                              className={`h-full shrink-0 border-r pointer-events-none ${bIdx === 0 ? 'border-l ' : ''}${
+                              className={`h-full shrink-0 border-r pointer-events-none ${
                                 isSam ? 'border-white/[0.08]' : 'border-white/[0.03]'
                               }`}
                             />

@@ -603,7 +603,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
                     <div
                       key={stepIdx}
                       style={{ width: `${stepWidth}px` }}
-                      className={`h-full shrink-0 flex items-center px-1 font-mono text-[10px] ${stepIdx === 0 ? 'border-l border-r' : 'border-r'} ${
+                      className={`h-full shrink-0 flex items-center ${isBarStart ? 'pl-2.5 pr-1' : 'px-1'} font-mono text-[10px] border-r ${
                         isBarStart 
                           ? 'border-white/[0.15] text-amber-200/90 font-medium bg-amber-500/[0.03]' 
                           : 'border-white/[0.05] text-slate-500'
@@ -645,7 +645,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
                           key={stepIdx}
                           onClick={() => handleCellClick(s, stepIdx)}
                           style={{ width: `${stepWidth}px` }}
-                          className={`h-full shrink-0 border-r cursor-pointer transition-colors relative ${stepIdx === 0 ? 'border-l ' : ''}${
+                          className={`h-full shrink-0 border-r cursor-pointer transition-colors relative ${
                             isBarStart ? 'border-white/[0.15]' : 'border-white/[0.05]'
                           } ${
                             inRaga ? 'hover:bg-amber-500/15' : 'bg-slate-950/60 hover:bg-slate-900/40'

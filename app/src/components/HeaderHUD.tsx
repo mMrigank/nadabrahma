@@ -132,7 +132,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   };
 
   return (
-    <header className="glass-panel border-b border-slate-800/80 px-4 py-2.5 flex items-center justify-between text-xs select-none sticky top-0 z-40 bg-black/60 backdrop-blur-xl">
+    <header className="glass-panel border-b border-slate-800/80 px-4 py-2.5 flex items-center justify-between text-xs select-none sticky top-0 z-[200] relative bg-black/85 backdrop-blur-xl">
       
       {/* 1. Brand Logo & Mode Badge */}
       <div className="flex items-center gap-3">
@@ -164,7 +164,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
           </button>
 
           {showEnginesDropdown && (
-            <div className="absolute top-10 left-0 w-56 glass-dropdown rounded-xl p-2 z-50 flex flex-col gap-1 border border-slate-700/80 shadow-2xl bg-black/90 backdrop-blur-2xl">
+            <div className="absolute top-10 left-0 w-60 glass-dropdown rounded-xl p-2 z-[9999] flex flex-col gap-1 border border-slate-700/80 shadow-2xl bg-[#090c13]/98 backdrop-blur-2xl">
               <div className="text-[10px] text-slate-500 font-semibold uppercase px-2 py-1 tracking-wider border-b border-slate-800/60 mb-1">Launchers</div>
               
               {onOpenExtendedSpectrum && (
@@ -306,7 +306,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
             {/* Metronome Settings Popover */}
             {showMetronomeSettings && (
-              <div className="absolute top-9 left-0 w-64 glass-dropdown rounded-xl p-3 z-50 shadow-2xl border border-slate-700/80 text-xs">
+              <div className="absolute top-9 left-0 w-64 glass-dropdown rounded-xl p-3 z-[9999] shadow-2xl border border-slate-700/80 text-xs">
                 <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-800">
                   <span className="font-semibold text-slate-200">Metronome & Tala Tuning</span>
                   <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${isMetronomeActive ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-800 text-slate-400'}`}>
@@ -423,7 +423,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
           {/* Tala Dropdown */}
           {showTalaDropdown && (
-            <div className="absolute top-10 left-0 w-52 glass-dropdown rounded-xl p-2 z-50">
+            <div className="absolute top-10 left-0 w-52 glass-dropdown rounded-xl p-2 z-[9999]">
               <div className="text-[10px] text-slate-400 font-semibold uppercase px-2 py-1">Select Tala (Meter)</div>
               {TALA_DATABASE.map(t => (
                 <div
@@ -481,7 +481,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
           {/* Sa Popover */}
           {showSaPopover && (
-            <div className="absolute top-10 right-0 w-64 glass-dropdown rounded-xl p-3 z-50 font-sans">
+            <div className="absolute top-10 right-0 w-64 glass-dropdown rounded-xl p-3 z-[9999] font-sans">
               <div className="flex items-center justify-between mb-2">
                 <span className="font-semibold text-slate-200">Adhara Shadja (Sa)</span>
                 <span className="font-mono text-amber-300 text-xs font-semibold">{baseSaHz} Hz</span>
@@ -557,7 +557,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
           {/* Raga Dropdown */}
           {showRagaDropdown && (
-            <div className="absolute top-10 right-0 w-80 glass-dropdown rounded-xl p-2.5 z-50 font-sans">
+            <div className="absolute top-10 right-0 w-80 glass-dropdown rounded-xl p-2.5 z-[9999] font-sans">
               <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
                 <span className="font-semibold text-slate-200 text-xs">Raga & Mood Filter</span>
                 <select
