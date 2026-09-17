@@ -14,6 +14,9 @@ import { DirectorsWizardModal } from './components/DirectorsWizardModal';
 import { AddTrackModal } from './components/AddTrackModal';
 import { RisersDropsPanel } from './components/RisersDropsPanel';
 import { MasterMixerDrawer } from './components/MasterMixerDrawer';
+import { ShrutiMandalaModal } from './components/ShrutiMandalaModal';
+import { VagdhenuLyricsDrawer } from './components/VagdhenuLyricsDrawer';
+import { AIModelOrchestratorModal } from './components/AIModelOrchestratorModal';
 
 const INITIAL_TRACKS: Track[] = [
   {
@@ -210,6 +213,10 @@ export function App() {
   const [isRisersDropsOpen, setIsRisersDropsOpen] = useState<boolean>(false);
   const [isMasterMixerOpen, setIsMasterMixerOpen] = useState<boolean>(false);
   const [isPianoRollOpen, setIsPianoRollOpen] = useState<boolean>(true);
+  const [isShrutiHubOpen, setIsShrutiHubOpen] = useState<boolean>(false);
+  const [isVagdhenuOpen, setIsVagdhenuOpen] = useState<boolean>(false);
+  const [isAISuiteOpen, setIsAISuiteOpen] = useState<boolean>(false);
+  const [aiFocusedTrackId, setAiFocusedTrackId] = useState<string | null>(null);
 
   // Notifications / Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -355,6 +362,111 @@ export function App() {
 
   const selectedTrack = tracks.find(t => t.id === selectedTrackId) || tracks[0] || null;
 
+  /** Commit an AI-synthesised take as a new clip on the target track. */
+  const handleGenerateAIClip = (
+    trackId: string,
+    prompt: string,
+    model: AIModel,
+    durationBars: number
+  ) => {
+    const track = tracks.find(t => t.id === trackId);
+    if (!track) return;
+
+    const startBar = Math.max(
+      1,
+      track.clips.reduce((end, c) => Math.max(end, c.startBar + c.durationBars), 1)
+    );
+
+    setTracks(prev =>
+      prev.map(t => {
+        if (t.id !== trackId) return t;
+        const takeName = `Take ${t.takes.length + 1} (${model.replace('_', ' ')} · ${activeRaga.name})`;
+        return {
+          ...t,
+          model,
+          takes: [
+            ...t.takes,
+            {
+              id: `take-${Date.now()}`,
+              name: takeName,
+              timestamp: 'Just now',
+              durationSec: Math.round(durationBars * (4 * 60 / bpm)),
+              energyScore: 0.86,
+              promptUsed: prompt,
+              contextAware: true
+            }
+          ],
+          activeTakeIndex: t.takes.length,
+          clips: [
+            ...t.clips,
+            {
+              id: `clip-ai-${Date.now()}`,
+              name: `${activeRaga.name} AI Phrase (${durationBars}b)`,
+              startBar,
+              durationBars,
+              color: t.color
+            }
+          ]
+        };
+      })
+    );
+
+    audioEngine.playNotePreview(baseSaHz * 2, 0.5);
+    showToast(`${model.replace('_', ' ')} rendered ${durationBars} bars → ${track.name} @ Bar ${startBar}`);
+  };
+
+  /** Route a Vedic hymn into Track 2 (Vocals) as a new AI take. */
+  const handleSendVedicToTrack2 = (vedicText: string) => {
+    const vocalTrack = tracks.find(t => t.id === 'tr-2') ?? tracks.find(t => t.role === 'vedic_chant');
+    if (!vocalTrack) {
+      showToast('No vocal track available to receive the recitation.');
+      return;
+    }
+
+    setTracks(prev =>
+      prev.map(t => {
+        if (t.id !== vocalTrack.id) return t;
+        return {
+          ...t,
+          takes: [
+            ...t.takes,
+            {
+              id: `take-vedic-${Date.now()}`,
+              name: `Take ${t.takes.length + 1} (Vāgdhenu Recitation)`,
+              timestamp: 'Just now',
+              durationSec: 32,
+              energyScore: 0.9,
+              promptUsed: vedicText,
+              contextAware: true
+            }
+          ],
+          activeTakeIndex: t.takes.length,
+          clips: [
+            ...t.clips,
+            {
+              id: `clip-vedic-${Date.now()}`,
+              name: 'Vedic Chhandas Recitation',
+              startBar: Math.max(
+                1,
+                t.clips.reduce((end, c) => Math.max(end, c.startBar + c.durationBars), 1)
+              ),
+              durationBars: 8,
+              color: t.color
+            }
+          ]
+        };
+      })
+    );
+
+    audioEngine.playNotePreview(baseSaHz * 1.5, 0.6);
+    showToast(`Vāgdhenu recitation routed to ${vocalTrack.name}`);
+  };
+
+  const openAISuite = (trackId?: string) => {
+    setAiFocusedTrackId(trackId ?? null);
+    setIsAISuiteOpen(true);
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-[#07090e] text-slate-100 overflow-hidden font-sans select-none">
       
@@ -375,6 +487,9 @@ export function App() {
         onOpenDirectorWizard={() => setIsDirectorWizardOpen(true)}
         onOpenAddTrack={() => setIsAddTrackOpen(true)}
         onToggleMasterMixer={() => setIsMasterMixerOpen(!isMasterMixerOpen)}
+        onOpenShrutiHub={() => setIsShrutiHubOpen(true)}
+        onOpenVagdhenu={() => setIsVagdhenuOpen(true)}
+        onOpenAISuite={() => openAISuite()}
         currentBeat={currentBeat}
       />
 
@@ -427,6 +542,35 @@ export function App() {
           >
             <Sliders className="w-3.5 h-3.5 text-cyan-400" />
             Master & 3D Spatial
+          </button>
+
+          <div className="w-px h-5 bg-slate-700 mx-1"></div>
+
+          <button
+            onClick={() => setIsShrutiHubOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 text-xs font-semibold transition-all shadow-sm"
+            title="22 Shrutis Just Intonation & Moveable Sa continuous-Hz tuning"
+          >
+            <span className="text-[13px] leading-none">🕉️</span>
+            22 Shrutis · Sa Hub
+          </button>
+
+          <button
+            onClick={() => setIsVagdhenuOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-orange-500/20 border border-orange-500/40 text-orange-300 hover:bg-orange-500/30 text-xs font-semibold transition-all shadow-sm"
+            title="Vāgdhenu Sanskrit Vedic phonology & synchronized teleprompter"
+          >
+            <span className="text-[13px] leading-none">📿</span>
+            Vedic Lyrics
+          </button>
+
+          <button
+            onClick={() => openAISuite()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-500/20 border border-violet-500/40 text-violet-300 hover:bg-violet-500/30 text-xs font-semibold transition-all shadow-sm"
+            title="Multi-model AI suite with Apple MLX memory budgeter"
+          >
+            <span className="text-[13px] leading-none">🧠</span>
+            AI Suite (MLX)
           </button>
 
           <div className="w-px h-5 bg-slate-700 mx-1"></div>
@@ -524,6 +668,35 @@ export function App() {
         onClose={() => setIsMasterMixerOpen(false)}
         isPlaying={isPlaying}
         busGroups={['Vocals', 'Acoustics', 'Percussion', 'Orchestral', 'Cinematic FX']}
+      />
+
+      <ShrutiMandalaModal
+        isOpen={isShrutiHubOpen}
+        onClose={() => setIsShrutiHubOpen(false)}
+        baseSaHz={baseSaHz}
+        onSaHzChange={setBaseSaHz}
+        activeRagaId={activeRaga.id}
+      />
+
+      <VagdhenuLyricsDrawer
+        isOpen={isVagdhenuOpen}
+        onClose={() => setIsVagdhenuOpen(false)}
+        baseSaHz={baseSaHz}
+        onSaHzChange={setBaseSaHz}
+        activeRaga={activeRaga}
+        beatsPerBar={activeTala.matras / 4}
+        onSendToTrack2={handleSendVedicToTrack2}
+      />
+
+      <AIModelOrchestratorModal
+        isOpen={isAISuiteOpen}
+        onClose={() => setIsAISuiteOpen(false)}
+        baseSaHz={baseSaHz}
+        activeRaga={activeRaga}
+        activeTala={activeTala}
+        tracks={tracks}
+        focusedTrackId={aiFocusedTrackId}
+        onGenerateAIClip={handleGenerateAIClip}
       />
 
     </div>

@@ -1,5 +1,10 @@
 # 03_ROADMAP_AND_IMPLEMENTATION: Development Plan & Milestone Tracker
 
+> **[!IMPORTANT]**
+> Checkbox state below reflects **verified repository state**, not intent.
+> See [[04_IMPLEMENTATION_STATUS]] for the ground-truth audit and a list of
+> deliberately simulated stubs.
+
 ---
 
 ## 🎯 Implementation Phases
@@ -8,70 +13,83 @@
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │                               DEVELOPMENT MILESTONES                                   │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  PHASE 1: Interactive Web DAW Frontend (HUD, Director Wizard, 5-Track Timeline)        │
-│  PHASE 2: Raga, Tala & Sanskrit Ingestion Engine (22 Shrutis, ragaBridge, Vāgdhenu)    │
-│  PHASE 3: Apple Silicon M1 Max Runtime & Multi-Model Dispatcher (MLX / audio.cpp)      │
-│  PHASE 4: Audio Pipeline (BS-Roformer Stems, UVR Cleanup, Seed-VC / RVC)               │
-│  PHASE 5: Full Mastering Suite, The Owl 3D Spatializer & Local FastMCP Server          │
+│  PHASE 1: Interactive Web DAW Frontend (HUD, Director Wizard, Timeline)    [~85% DONE] │
+│  PHASE 2: Raga, Tala & Sanskrit Ingestion Engine (22 Shrutis, Vāgdhenu)    [~55% DONE] │
+│  PHASE 3: Apple Silicon M1 Max Runtime & Multi-Model Dispatcher (MLX)      [~15% DONE] │
+│  PHASE 4: Audio Pipeline (Stems, Cleanup, Voice Transform)                 [ ~8% DONE] │
+│  PHASE 5: Mastering, The Owl 3D Spatializer & Local FastMCP Server         [ ~5% DONE] │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### Phase 1: Interactive Web DAW Frontend (Current Priority)
-- [ ] Initialize React 19 / Vite 7 project with Tailwind CSS 4.
-- [ ] Implement the **Raga-Tala HUD Strip**:
-  - Moveable $Sa$ frequency selector ($10\text{ Hz} - 48\text{ kHz}$) with "Detect My Sa" mic button.
-  - Time of Day (*Prahar*) and Emotion (*Navarasa*) dropdown filters.
-  - Active Raga Selector (with Arohana/Avarohana preview).
-  - Indian Tala Selector with animated rhythm beads (*Sam*, *Tali*, *Khali*).
-- [ ] Implement the **Director’s Scene Wizard Modal**:
-  - Visual Navarasa Compass.
-  - 15–30s Voice Drop Box with reinterpretation and texture sliders.
-  - One-click scene scoring.
-- [ ] Implement the **5-Track Timeline & Piano Roll**:
-  - Track 1 (Instrumental Bed), Track 2 (Vocals), Track 3 (Percussion), Track 4 (Ambient Drones), Track 5 (Risers & Drops).
-  - Swara-labeled piano roll keys ($S, r, R, g, G, m, M, P, d, D, n, N$) with forbidden note dimming.
-  - Continuous F0 *Meend* curve editing canvas.
+### Phase 1: Interactive Web DAW Frontend (~85%)
+- [x] React 19 / Vite 8 project with Tailwind CSS 4.
+- [x] **Raga-Tala HUD Strip**:
+  - [x] Moveable $Sa$ frequency selector (110–240 Hz vernier) with "Detect My Sa" button *(stub — returns fixed 138.59 Hz)*.
+  - [x] Emotion (*Navarasa*) dropdown filter.
+  - [x] Active Raga Selector (with Swara / Western-mode preview).
+  - [x] Indian Tala Selector with animated rhythm beads (*Sam*, *Tali*, *Khali*).
+- [x] **Director's Scene Wizard Modal** — Navarasa compass, scene scoring.
+- [x] **Multi-Track Timeline & Piano Roll**:
+  - [x] Bus-grouped tracks (Vocals / Acoustics / Percussion / Orchestral / Cinematic FX).
+  - [x] Swara-labeled piano roll keys.
+  - [ ] Forbidden-note (varjit) dimming — *not yet enforced in the roll*.
+  - [ ] Continuous F0 *Meend* curve editing canvas — *not implemented*.
 
 ---
 
-### Phase 2: Raga, Tala & Sanskrit Ingestion Engine
-- [ ] Create `ragaBridge.ts`:
-  - 10 Thaats + 72 Melakarta Ragas dictionary with Western modal equivalents.
-  - Just Intonation 22 Shrutis mathematical ratio engine.
-- [ ] Implement Sanskrit G2P / IPA Normalizer:
-  - Expands casual text / Hinglish into classical Sanskrit orthography and IPA tokens.
-  - Eliminates schwa deletion.
-- [ ] Embed **Vāgdhenu / Cowchant** client for authentic Vedic chanting generation.
+### Phase 2: Raga, Tala & Sanskrit Ingestion Engine (~55%)
+- [x] `ragaEngine.ts` — 8 Ragas + 5 Talas + full 22-Shruti ratio table with cents.
+- [x] `vagdhenuPhonetics.ts` — hymns, Chhandas analyzer, IPA + Udātta/Anudātta/Svarita
+      generation, schwa-deletion auditor, recitation timing.
+- [x] `VagdhenuLyricsDrawer.tsx` — synchronized teleprompter with per-syllable svara audition.
+- [x] `ShrutiMandalaModal.tsx` — 22-Shruti circular hub with Just-vs-12-TET beating audition.
+- [ ] `ragaBridge.ts` — *absent*; dual-conditioned prompt building currently lives inline
+      in `aiModelData.ts` and `AIModelOrchestratorModal.tsx`.
+- [ ] `gamakaData.ts` — *absent*; Meend / Andolan / Kampita / Murki / Kan-Svara not modeled.
+- [ ] 10 Thaats + 72 Melakarta dictionary — *absent* (8 Ragas only).
+- [ ] Local Vāgdhenu / Cowchant inference — *absent*; only the phonology layer exists.
 
 ---
 
-### Phase 3: Apple Silicon M1 Max Runtime & Model Dispatcher
-- [ ] Set up native **MLX** runtime for Apple Silicon unified memory.
-- [ ] Integrate **audio.cpp / llama.cpp** for C++ low-latency inference.
-- [ ] Implement model adapters:
-  - **ACE Studio / DiffSinger** (Note-by-note F0 curve in Hz).
-  - **YuE 2** (AR–NAR symbolic score tags + flow matching).
-  - **MiniMax Music 3** (Commercial API adapter).
-  - **Stable Audio 3** (Audio-to-audio stem generation & transition builder).
-- [ ] Implement **Context-Aware Track Takes**:
-  - Background guide mix bouncing and overdubbing alignment.
+### Phase 3: Apple Silicon M1 Max Runtime & Model Dispatcher (~15%)
+- [x] `aiModelData.ts` — 6 model specs with quantization / VRAM / accelerator metadata.
+- [x] 18 GB working-memory ceiling budgeter + residency UI *(heuristic, not real MLX accounting)*.
+- [x] `AIModelOrchestratorModal.tsx` — model residency, per-track routing matrix, prompt playground.
+- [ ] Native **MLX** runtime — *absent* (pure client-side SPA, no backend).
+- [ ] **audio.cpp / llama.cpp** integration — *absent*.
+- [ ] Model adapters (ACE Studio, YuE 2, MiniMax 3, Stable Audio 3) — *absent*; `onGenerateAIClip`
+      commits a take + clip without audio inference.
+- [ ] Background guide-mix bounce for context-aware overdubs — *absent*.
 
 ---
 
-### Phase 4: Audio Separation & Voice Transformation Suite
-- [ ] Integrate **BS-Roformer** and **Demucs** for local 2-stem, 4-stem, and 6-stem isolation.
-- [ ] Integrate **UVR Denoise & Dereverb** (Clean Up suite).
-- [ ] Integrate **Seed-VC** (consented voice transfer) & **RVC Applio** (14+ voicebanks).
-- [ ] Integrate **BasicPitch** (polyphonic audio-to-MIDI) and **Web MIDI Out**.
+### Phase 4: Audio Separation & Voice Transformation Suite (~8%)
+- [x] `stemForgeEngine.ts` — Broadcast WAV writer with real `bext` + `iXML` chunks,
+      LUFS normalisation maths, stem definitions for 4/6-stem modes.
+- [x] ITU-R BS.1770-style loudness telemetry in `webAudioEngine.ts`.
+- [ ] **BS-Roformer / Demucs** separation — *absent*; `separateStems()` allocates
+      correctly-shaped silent buffers.
+- [ ] UVR Denoise & Dereverb — *absent*.
+- [ ] Seed-VC / RVC Applio — *absent*.
+- [ ] BasicPitch audio-to-MIDI, Web MIDI Out — *absent*.
 
 ---
 
-### Phase 5: Mastering, The Owl 3D Spatializer & Local MCP Server
-- [ ] Implement **AudioSR 96k Super-Resolution**:
-  - Automatic Per-Track 96 kHz / 32-bit float extended spectrum (10 Hz – 48,000 Hz).
-- [ ] Integrate **The Owl HRTF 3D Binaural Spatializer**.
-- [ ] Implement mastering chain: Quick Master (Punch, Air, Drive, Ceiling) + LUFS normalization.
-- [ ] Implement **FastMCP Server**:
-  - Exposes tools (`create_track`, `set_raga`, `generate_vocal`, `mix`, `export`) to Claude Code / Antigravity.
+### Phase 5: Mastering, The Owl 3D Spatializer & Local MCP Server (~5%)
+- [ ] `spatialAudioEngine.ts` — *absent entirely*. No spherical↔cartesian conversion,
+      no Ambisonics B-format, no 7.1.4 VBAP bed, no HRTF panner.
+- [ ] 96 kHz / 32-bit float super-resolution render pipeline — *partial*: the export
+      writer emits 32-bit float at the source buffer's rate; no resampler to 96 kHz yet.
+- [ ] Mastering chain (Quick Master: Punch, Air, Drive, Ceiling) — *absent*.
+- [ ] **FastMCP Server** — *absent*.
+- [ ] Milestone 25: ADM BWF (`axml` / `chna`) Atmos renderer — *not started*.
+
+---
+
+## Related Notes
+* [[04_IMPLEMENTATION_STATUS]]
+* [[01_MASTER_SPECIFICATION]]
+* [[02_M1_MAX_ARCHITECTURE]]
+

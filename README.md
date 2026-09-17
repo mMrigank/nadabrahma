@@ -25,7 +25,9 @@ This vault is formatted for **Obsidian** with bidirectional wikilinks `[[...]]` 
 * **[[00_SYSTEM_CONTEXT]]** — **Mandatory context file for any AI model** (Claude Code, Qwen, GLM, Antigravity) to resume work with 100% fidelity.
 * **[[01_MASTER_SPECIFICATION]]** — The complete end-to-end technical blueprint of the workstation.
 * **[[02_M1_MAX_ARCHITECTURE]]** — Apple Silicon native performance guide (MLX, audio.cpp, C++ DSP, zero-leak memory management).
-* **[[03_ROADMAP_AND_IMPLEMENTATION]]** — Phase-by-phase implementation plan and task tracking.
+* **[[03_ROADMAP_AND_IMPLEMENTATION]]** — Phase-by-phase implementation plan and task tracking (checkbox state = verified repo state).
+* **[[04_IMPLEMENTATION_STATUS]]** — ⚠️ **Read before planning.** Ground-truth audit separating shipped code, partial code, and deliberately simulated stubs.
+* **[[CHANGELOG]]** — Dated record of what actually changed.
 
 ### 📚 Core Concept Deep Dives
 * **[[Core_Concepts/Indian_Classical_Engine]]** — Moveable *Sa*, 22 Shrutis, 10 Thaats, 72 Melakartas, Tala rhythm clock, and the Raga-to-Western Modal Bridge.

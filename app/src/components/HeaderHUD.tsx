@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Play, Pause, Square, Repeat, Mic, Volume2, 
-  Sparkles, Sliders, Music, Radio, ChevronDown, Layers
+import {
+  Play, Pause, Square, Repeat, Mic, Volume2,
+  Sparkles, Sliders, Music, Radio, ChevronDown, Layers, Brain
 } from 'lucide-react';
 import { Raga, Tala, RasaType } from '../types/daw';
 import { RAGA_DATABASE, TALA_DATABASE, hzToMidiWithCents } from '../lib/ragaEngine';
@@ -23,6 +23,9 @@ interface HeaderHUDProps {
   onOpenDirectorWizard: () => void;
   onOpenAddTrack: () => void;
   onToggleMasterMixer: () => void;
+  onOpenShrutiHub: () => void;
+  onOpenVagdhenu: () => void;
+  onOpenAISuite: () => void;
   currentBeat: number;
 }
 
@@ -42,6 +45,9 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   onOpenDirectorWizard,
   onOpenAddTrack,
   onToggleMasterMixer,
+  onOpenShrutiHub,
+  onOpenVagdhenu,
+  onOpenAISuite,
   currentBeat
 }) => {
   const [isTanpuraActive, setIsTanpuraActive] = useState(false);
@@ -270,6 +276,15 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                 <Mic className={`w-3.5 h-3.5 ${isDetectingSa ? 'animate-bounce text-yellow-200' : ''}`} />
                 <span>{isDetectingSa ? 'Listening to voice...' : '🎤 Detect My Sa (Mic)'}</span>
               </button>
+
+              {/* Open 22 Shrutis Tuning Hub */}
+              <button
+                onClick={() => { setShowSaPopover(false); onOpenShrutiHub(); }}
+                className="w-full mt-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-medium flex items-center justify-center gap-1.5 text-xs transition cursor-pointer"
+              >
+                <span className="text-sm leading-none">🕉️</span>
+                <span>Open 22 Shrutis Tuning Hub</span>
+              </button>
             </div>
           )}
         </div>
@@ -349,6 +364,33 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
         >
           <Layers className="w-3.5 h-3.5 text-indigo-400" />
           <span>+ Add Track</span>
+        </button>
+
+        {/* 22 Shrutis Tuning Hub */}
+        <button
+          onClick={onOpenShrutiHub}
+          className="w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-slate-700/80 flex items-center justify-center transition cursor-pointer"
+          title="22 Shrutis Just Intonation & Moveable Sa Hub"
+        >
+          <span className="text-sm leading-none">🕉️</span>
+        </button>
+
+        {/* Vāgdhenu Vedic Lyrics */}
+        <button
+          onClick={onOpenVagdhenu}
+          className="w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 text-orange-300 border border-slate-700/80 flex items-center justify-center transition cursor-pointer"
+          title="Vāgdhenu Sanskrit Vedic Phonology & Teleprompter"
+        >
+          <span className="text-sm leading-none">📿</span>
+        </button>
+
+        {/* AI Suite (MLX) */}
+        <button
+          onClick={onOpenAISuite}
+          className="w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 text-violet-300 border border-slate-700/80 flex items-center justify-center transition cursor-pointer"
+          title="Multi-Model AI Suite & Apple MLX Memory Budgeter"
+        >
+          <Brain className="w-4 h-4 text-violet-400" />
         </button>
 
         {/* Master Mix & 3D Spatializer Toggle */}
