@@ -24,6 +24,7 @@ interface PianoRollProps {
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   playheadPosition?: number;
+  timeSignature?: string;
 }
 
 export interface NoteEvent {
@@ -59,13 +60,17 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   onClose,
   isExpanded = false,
   onToggleExpand,
-  playheadPosition = 1
+  playheadPosition = 1,
+  timeSignature = '4/4'
 }) => {
-  const totalSteps = 32;
+  const totalSteps = 64; // Increased to 64 for longer scrolling
   const [stepWidth, setStepWidth] = useState<number>(54); // Horizontal stretch in pixels per step (36px - 96px)
   const [activeLane, setActiveLane] = useState<'notes' | 'meend'>('notes');
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>('3'); // Default select Ga
   const [copiedPromptToast, setCopiedPromptToast] = useState<string | null>(null);
+
+  const tsParts = timeSignature.split('/');
+  const beatsPerBar = parseInt(tsParts[0]) || 4;
 
   const keysRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -313,6 +318,22 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     setCopiedPromptToast('✨ Copied Dual-Conditioned Gamaka Prompt to Clipboard!');
     setTimeout(() => setCopiedPromptToast(null), 3500);
   };
+
+  // Keyboard Delete for Notes
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        if (selectedNoteId) {
+          setNotes(prev => prev.filter(n => n.id !== selectedNoteId));
+          setSelectedNoteId(null);
+          audioEngine.playNotePreview(150, 0.1); // subtle low thud
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNoteId]);
 
   return (
     <div className="h-full w-full bg-[#070a0f] flex flex-col select-none text-xs font-sans">
@@ -584,7 +605,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         <div 
           ref={gridRef}
           onScroll={handleGridScroll}
-          className="flex-1 overflow-auto relative bg-[#05070c]"
+          className="flex-1 overflow-x-auto overflow-y-auto relative bg-[#05070c]"
         >
           {activeLane === 'notes' ? (
             <div 
@@ -595,9 +616,9 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
               {/* Step / Beat Ruler Header */}
               <div className="h-6 flex shrink-0 border-b border-white/[0.12] bg-slate-950 sticky top-0 z-10">
                 {Array.from({ length: totalSteps }).map((_, stepIdx) => {
-                  const isBarStart = (stepIdx % 4) === 0;
-                  const barNum = Math.floor(stepIdx / 4) + 1;
-                  const stepInBar = (stepIdx % 4) + 1;
+                  const isBarStart = (stepIdx % beatsPerBar) === 0;
+                  const barNum = Math.floor(stepIdx / beatsPerBar) + 1;
+                  const stepInBar = (stepIdx % beatsPerBar) + 1;
 
                   return (
                     <div
@@ -622,7 +643,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
               {/* Vertical Playhead Line inside Piano Roll */}
               <div 
                 className="absolute top-0 bottom-0 w-[2px] bg-amber-400 pointer-events-none z-30 transition-all duration-75"
-                style={{ left: `${(playheadPosition - 1) * 4 * stepWidth}px` }}
+                style={{ left: `${(playheadPosition - 1) * beatsPerBar * stepWidth}px` }}
               />
 
               {/* Swara Grid Rows */}
@@ -635,7 +656,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
                     className="h-7 shrink-0 flex relative"
                   >
                     {Array.from({ length: totalSteps }).map((_, stepIdx) => {
-                      const isBarStart = (stepIdx % 4) === 0;
+                      const isBarStart = (stepIdx % beatsPerBar) === 0;
                       const noteOnCell = notes.find(n => n.swaraKey === s.key && n.startStep <= stepIdx && stepIdx < (n.startStep + n.durationSteps));
                       const isNoteHead = noteOnCell && noteOnCell.startStep === stepIdx;
                       const isSelected = noteOnCell && noteOnCell.id === selectedNoteId;

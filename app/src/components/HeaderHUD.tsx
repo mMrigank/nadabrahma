@@ -50,7 +50,8 @@ interface HeaderHUDProps {
   onMetronomeVolumeChange: (vol: number) => void;
   metronomeTimbre: MetronomeTimbre;
   onMetronomeTimbreChange: (timbre: MetronomeTimbre) => void;
-  onStop?: () => void;
+  timeSignature?: string;
+  onTimeSignatureChange?: (ts: string) => void;
   onSaveProject?: () => void;
   onExportMaster?: () => void;
 }
@@ -60,6 +61,8 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   onTogglePlay,
   bpm,
   onBpmChange,
+  timeSignature = '4/4',
+  onTimeSignatureChange,
   baseSaHz,
   onSaHzChange,
   activeRaga,
@@ -396,16 +399,29 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
         <div className="h-5 w-[1px] bg-slate-800" />
 
         {/* BPM Selector */}
-        <div className="flex items-center gap-1.5 font-mono">
-          <span className="text-slate-400 font-medium">BPM</span>
-          <input
-            type="number"
-            min="40"
-            max="260"
-            value={bpm}
-            onChange={(e) => onBpmChange(Number(e.target.value))}
-            className="w-13 px-1.5 py-0.5 bg-slate-900 border border-slate-700/80 rounded text-center text-amber-200/90 font-medium focus:outline-none focus:border-amber-600/50"
-          />
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 font-mono">
+            <span className="text-slate-400 font-medium">BPM</span>
+            <input
+              type="number"
+              min="40"
+              max="260"
+              value={bpm}
+              onChange={(e) => onBpmChange(Number(e.target.value))}
+              className="w-13 px-1.5 py-0.5 bg-slate-900 border border-slate-700/80 rounded text-center text-amber-200/90 font-medium focus:outline-none focus:border-amber-600/50"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5 font-mono">
+            <span className="text-slate-400 font-medium">SIG</span>
+            <input
+              type="text"
+              value={timeSignature}
+              onChange={(e) => onTimeSignatureChange && onTimeSignatureChange(e.target.value)}
+              className="w-11 px-1.5 py-0.5 bg-slate-900 border border-slate-700/80 rounded text-center text-amber-200/90 font-medium focus:outline-none focus:border-amber-600/50"
+              placeholder="4/4"
+            />
+          </div>
         </div>
 
         <div className="h-5 w-[1px] bg-slate-800" />

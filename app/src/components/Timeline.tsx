@@ -32,9 +32,9 @@ interface TimelineProps {
   onOpenStemForge?: (trackId?: string) => void;
   onOpenSpatialAudio?: (trackId?: string) => void;
   onOpenMidiController?: () => void;
-  onOpenPlugins?: (trackId?: string) => void;
   sections?: ArrangementSection[];
   onOpenArranger?: () => void;
+  timeSignature?: string;
 }
 
 export interface TrackSelection {
@@ -84,7 +84,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   onOpenMidiController,
   onOpenPlugins,
   sections = [],
-  onOpenArranger
+  onOpenArranger,
+  timeSignature = '4/4'
 }) => {
   const [collapsedGroups, setCollapsedGroups] = useState<{ [group: string]: boolean }>({});
   const [barWidth, setBarWidth] = useState<number>(64); // Zoom scale in pixels per bar (28px - 140px)
@@ -152,9 +153,13 @@ export const Timeline: React.FC<TimelineProps> = ({
     setCollapsedGroups(prev => ({ ...prev, [group]: !prev[group] }));
   };
 
+  const tsParts = timeSignature.split('/');
+  const beatsPerBar = parseInt(tsParts[0]) || 4;
+  const beatUnit = parseInt(tsParts[1]) || 4;
+
   // Convert bar index to real-world minutes and seconds at current BPM
   const getBarTime = (barIdx: number, tempoBpm: number) => {
-    const totalSeconds = Math.floor(barIdx * (4 * 60 / tempoBpm));
+    const totalSeconds = Math.floor(barIdx * (beatsPerBar * 60 / tempoBpm));
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
@@ -359,7 +364,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         id: `take-ext-${Date.now()}`,
         name: `Take ${track.takes.length + 1} (${baseName} Extended to Bar ${extendedToBar})`,
         timestamp: 'Just now',
-        durationSec: Math.round(newDurationBars * (4 * 60 / bpm)),
+        durationSec: Math.round(newDurationBars * (beatsPerBar * 60 / bpm)),
         contextAware: true
       };
 
@@ -488,7 +493,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           id: `take-split-${Date.now()}`,
           name: `Take ${track.takes.length + 1} (Split ${baseName} at Bar ${splitBar})`,
           timestamp: 'Just now',
-          durationSec: Math.round(clip.durationBars * (4 * 60 / bpm)),
+          durationSec: Math.round(clip.durationBars * (beatsPerBar * 60 / bpm)),
           contextAware: true
         }
       ]
@@ -758,7 +763,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             id: `take-${Date.now()}`,
             name: `Take ${track.takes.length + 1} (${clipTitle})`,
             timestamp: 'Just now',
-            durationSec: Math.round(selection.durationBars * (4 * 60 / bpm)),
+            durationSec: Math.round(selection.durationBars * (beatsPerBar * 60 / bpm)),
             contextAware: true
           }
         ]
@@ -1439,12 +1444,12 @@ export const Timeline: React.FC<TimelineProps> = ({
                 className="sticky left-[328px] z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-[10px] font-bold shadow-lg shadow-black/80 border border-amber-300 cursor-pointer transition animate-in fade-in slide-in-from-left-2 duration-150 my-auto ml-2 shrink-0"
               >
                 <span className="text-xs font-black">◀</span>
-                <span>Playhead: Bar {Math.floor(playheadPosition)}.{Math.floor((playheadPosition % 1) * 4) + 1}</span>
+                <span>Playhead: Bar {Math.floor(playheadPosition)}.{Math.floor((playheadPosition % 1) * beatsPerBar) + 1}</span>
               </button>
             )}
 
             {Array.from({ length: totalBars }).map((_, barIdx) => {
-              const isSam = (barIdx % 4) === 0;
+              const isSam = (barIdx % beatsPerBar) === 0;
               const showTime = barWidth >= 48 ? isSam : (barIdx % 8) === 0;
               return (
                 <div 
@@ -1476,7 +1481,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               title="Playhead is ahead off-screen. Click to view playhead."
               className="fixed right-6 top-[85px] z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-[10px] font-bold shadow-lg shadow-black/80 border border-amber-300 cursor-pointer transition animate-in fade-in slide-in-from-right-2 duration-150"
             >
-              <span>Playhead: Bar {Math.floor(playheadPosition)}.{Math.floor((playheadPosition % 1) * 4) + 1}</span>
+              <span>Playhead: Bar {Math.floor(playheadPosition)}.{Math.floor((playheadPosition % 1) * beatsPerBar) + 1}</span>
               <span className="text-xs font-black">▶</span>
             </button>
           )}

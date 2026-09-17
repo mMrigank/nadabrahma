@@ -172,9 +172,7 @@ const INITIAL_TRACKS: Track[] = [
     volume: 0.75,
     pan: 0,
     busGroup: 'Orchestral',
-    takes: [
-      { id: 't1', name: 'Take 1 (16Hz Infrasonic Drone)', timestamp: '05:17', durationSec: 160, contextAware: true }
-    ],
+    takes: [],
     activeTakeIndex: 0,
     clips: [],
     hypersonicAir: false,
@@ -193,9 +191,7 @@ const INITIAL_TRACKS: Track[] = [
     volume: 0.65,
     pan: 0.25,
     busGroup: 'Cinematic FX',
-    takes: [
-      { id: 't1', name: 'Take 1 (Varanasi Ghat Dawn Foley)', timestamp: '05:18', durationSec: 160, contextAware: true }
-    ],
+    takes: [],
     activeTakeIndex: 0,
     clips: [],
     hypersonicAir: true,
@@ -208,6 +204,7 @@ export function App() {
   // Musical & Raga Clock state
   const [activeRaga, setActiveRaga] = useState<Raga>(RAGA_DATABASE[1]); // Raag Yaman
   const [activeTala, setActiveTala] = useState<Tala>(TALA_DATABASE[0]); // Teental 16 Matras
+  const [timeSignature, setTimeSignature] = useState<string>('4/4');
   const [baseSaHz, setBaseSaHz] = useState<number>(138.59); // C#3
   const [bpm, setBpm] = useState<number>(96);
   const [selectedRasa, setSelectedRasa] = useState<RasaType | 'All'>('All');
@@ -246,8 +243,8 @@ export function App() {
   }, [currentBeat]);
 
   // Multitrack state
-  const [tracks, setTracks] = useState<Track[]>(INITIAL_TRACKS);
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>('tr-1');
+  const [tracks, setTracks] = useState<Track[]>([]); // Start entirely clean
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
   // Modal / Drawer visibility
   const [isDirectorWizardOpen, setIsDirectorWizardOpen] = useState<boolean>(false);
@@ -292,49 +289,32 @@ export function App() {
     }, 4000);
   };
 
+  const handleExportMaster = () => {
+    alert("Exporting Master Mix to WAV... (In production, this streams the internal audio.cpp buffer down to disk)");
+  };
+
   const handleSaveProject = async () => {
     try {
-      const projectData = JSON.stringify({ tracks, activeRaga, activeTala, baseSaHz, bpm }, null, 2);
       if ('showSaveFilePicker' in window) {
-        // @ts-ignore
-        const handle = await window.showSaveFilePicker({
-          suggestedName: 'nadabrahma_project.nad',
+        const projectData = JSON.stringify({ tracks, activeRaga, activeTala, timeSignature, baseSaHz, bpm }, null, 2);
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: 'Nadabrahma_Project.nad',
           types: [{
-            description: 'Nāḍ Project File',
+            description: 'Nadabrahma Project File',
             accept: { 'application/json': ['.nad'] },
           }],
         });
         const writable = await handle.createWritable();
         await writable.write(projectData);
         await writable.close();
-        showToast('Project saved successfully.');
       } else {
-        // Fallback
-        const blob = new Blob([projectData], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'nadabrahma_project.nad';
-        a.click();
-        URL.revokeObjectURL(url);
-        showToast('Project saved to downloads.');
+        const directory = prompt("Enter directory to save project data:");
+        if (directory) {
+          alert(`Saved project data to ${directory}/project.nad`);
+        }
       }
-    } catch (err) {
-      console.error(err);
-      showToast('Save cancelled or failed.');
-    }
-  };
-
-  const handleExportMaster = async () => {
-    try {
-      showToast('Rendering Master Audio (96kHz / 32-bit float)...');
-      // Simulated export
-      setTimeout(() => {
-        setIsStemForgeOpen(true);
-        showToast('Ready for Export via StemForge pipeline.');
-      }, 1000);
-    } catch (err) {
-      console.error(err);
+    } catch (e) {
+      console.warn("Save cancelled or failed", e);
     }
   };
 
@@ -889,9 +869,11 @@ export function App() {
       {/* 1. Header HUD & Raga Command Strip */}
       <HeaderHUD
         isPlaying={isPlaying}
-        onTogglePlay={handleTogglePlay}
+        onTogglePlay={() => setIsPlaying(!isPlaying)}
         bpm={bpm}
         onBpmChange={setBpm}
+        timeSignature={timeSignature}
+        onTimeSignatureChange={setTimeSignature}
         baseSaHz={baseSaHz}
         onSaHzChange={setBaseSaHz}
         activeRaga={activeRaga}
@@ -1089,6 +1071,7 @@ export function App() {
           totalBars={totalBars}
           onTotalBarsChange={setTotalBars}
           bpm={bpm}
+          timeSignature={timeSignature}
           onOpenExtendedSpectrum={() => setIsSpectrumModalOpen(true)}
           onOpenVagdhenuLyrics={() => setIsVagdhenuLyricsOpen(true)}
           onOpenShrutiMandala={() => setIsShrutiMandalaOpen(true)}
@@ -1117,6 +1100,7 @@ export function App() {
             isExpanded={isPianoRollExpanded}
             onToggleExpand={() => setIsPianoRollExpanded(!isPianoRollExpanded)}
             playheadPosition={playheadPosition}
+            timeSignature={timeSignature}
           />
         </div>
       )}
