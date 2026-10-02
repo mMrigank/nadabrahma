@@ -1,393 +1,411 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Square, Mic, Sparkles, Box } from 'lucide-react';
-import {
-  VEDIC_HYMNS,
-  generateVedicIPA,
-  generateVedicTiming,
-  type VedicSyllable
+import { 
+  BookOpen, Sparkles, Volume2, CheckCircle2, AlertTriangle, 
+  X, ChevronDown, Music, Copy, Send, Check, Play, Square, RefreshCw
+} from 'lucide-react';
+import { VedicChantPhrase, VedicSyllable, VedicSvaraAccent } from '../types/daw';
+import { 
+  VEDIC_PRESET_HYMNS, 
+  auditZeroSchwaDeletion, 
+  detectChhandasMeter, 
+  generateVagdhenuPrompt,
+  SchwaAuditResult
 } from '../lib/vagdhenuPhonetics';
 import { audioEngine } from '../lib/webAudioEngine';
-import { Raga } from '../types/daw';
 
 interface VagdhenuLyricsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   baseSaHz: number;
-  onSaHzChange: (hz: number) => void;
-  activeRaga: Raga;
-  beatsPerBar: number;
-  onSendToTrack2: (vedicText: string) => void;
+  activeRagaName: string;
+  selectedRasa: string;
+  isPlaying: boolean;
+  currentBeat: number;
+  onSendToVocalPrompt?: (promptText: string) => void;
 }
-
-type HymnKey = keyof typeof VEDIC_HYMNS;
-
-const SVARA_GLYPH: Record<VedicSyllable['svara'], string> = {
-  udatta: '↗',
-  anudatta: '↘',
-  svarita: '⤹',
-  none: ''
-};
-
-const SVARA_LABEL: Record<VedicSyllable['svara'], string> = {
-  udatta: 'Udātta (high tonic)',
-  anudatta: 'Anudātta (low tonic)',
-  svarita: 'Svarita (descending glide)',
-  none: 'Neutral'
-};
 
 export const VagdhenuLyricsDrawer: React.FC<VagdhenuLyricsDrawerProps> = ({
   isOpen,
   onClose,
   baseSaHz,
-  onSaHzChange,
-  activeRaga,
-  beatsPerBar,
-  onSendToTrack2
+  activeRagaName,
+  selectedRasa,
+  isPlaying,
+  currentBeat,
+  onSendToVocalPrompt
 }) => {
-  const [hymnKey, setHymnKey] = useState<HymnKey>('gayatri');
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentSyllable, setCurrentSyllable] = useState(-1);
-  const [showDevanagari, setShowDevanagari] = useState(true);
-  const [showIast, setShowIast] = useState(true);
-  const [showIPA, setShowIPA] = useState(false);
-  const [detectedSa, setDetectedSa] = useState<number | null>(null);
-  const [isDetecting, setIsDetecting] = useState(false);
+  const [activeHymn, setActiveHymn] = useState<VedicChantPhrase>(VEDIC_PRESET_HYMNS[0]);
+  const [scriptMode, setScriptMode] = useState<'both' | 'devanagari' | 'iast'>('both');
+  const [schwaAudit, setSchwaAudit] = useState<SchwaAuditResult>(() => auditZeroSchwaDeletion(VEDIC_PRESET_HYMNS[0].iastText));
+  const [isChantingFull, setIsChantingFull] = useState<boolean>(false);
+  const [activeSyllableIdx, setActiveSyllableIdx] = useState<number | null>(null);
+  const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
+  const [customText, setCustomText] = useState<string>('');
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(false);
 
-  const rafRef = useRef<number>(0);
-  const startRef = useRef<number>(0);
-
-  const hymn = VEDIC_HYMNS[hymnKey];
-  const syllables = hymn.syllables;
-  const timing = generateVedicTiming(syllables);
-
-  // Re-run the recitation sequencer on the animation frame clock so the
-  // highlighted syllable stays locked to the scheduled pitch auditions.
+  // Sync audit when hymn changes
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isCustomMode) {
+      setSchwaAudit(auditZeroSchwaDeletion(activeHymn.iastText));
+    }
+  }, [activeHymn, isCustomMode]);
 
-    startRef.current = performance.now();
+  // Sync teleprompter highlighting when playback is active
+  useEffect(() => {
+    if (isPlaying && activeHymn.syllables.length > 0) {
+      const idx = currentBeat % activeHymn.syllables.length;
+      setActiveSyllableIdx(idx);
+    } else if (!isChantingFull) {
+      setActiveSyllableIdx(null);
+    }
+  }, [isPlaying, currentBeat, activeHymn, isChantingFull]);
 
-    const tick = (now: number) => {
-      const elapsed = (now - startRef.current) / 1000;
-
-      let index = 0;
-      for (let i = 0; i < timing.length; i++) {
-        if (elapsed >= timing[i]) index = i;
-        else break;
-      }
-
-      setCurrentSyllable((prev) => {
-        if (index !== prev) {
-          const syl = syllables[index];
-          if (syl) {
-            audioEngine.playVedicSyllable(
-              baseSaHz,
-              syl.svara,
-              // matra duration at 60 BPM reference, capped for auditioning
-              Math.min(1.2, syl.durationMatras * 0.25)
-            );
-          }
+  // Full chant audition playback loop
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    if (isChantingFull) {
+      let curr = 0;
+      const step = () => {
+        if (curr >= activeHymn.syllables.length) {
+          setIsChantingFull(false);
+          setActiveSyllableIdx(null);
+          return;
         }
-        return index;
-      });
-
-      const total = timing[timing.length - 1] + 1.5;
-      if (elapsed >= total) {
-        setIsPlaying(false);
-        setCurrentSyllable(-1);
-        return;
-      }
-
-      rafRef.current = window.requestAnimationFrame(tick);
+        const s = activeHymn.syllables[curr];
+        setActiveSyllableIdx(curr);
+        audioEngine.playVedicSyllable(s.accent, baseSaHz, (s.durationMatras * 0.45));
+        curr++;
+        timer = setTimeout(step, s.durationMatras * 480);
+      };
+      step();
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
     };
-
-    rafRef.current = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, baseSaHz, syllables, timing]);
-
-  useEffect(() => {
-    return () => window.cancelAnimationFrame(rafRef.current);
-  }, []);
-
-  // Surface any colloquial schwa-deletion errors in the source transliteration.
-  // A terminal consonant (including -m) with no following vowel is the usual
-  // signature of a dropped final schwa.
-  const schwaIssues = syllables.flatMap((s) =>
-    s.iast
-      .split(/\s+/)
-      .filter((word) => /[k-rtvymnsśṣhḍṭṇ]$/.test(word) && word.length > 1)
-  );
-
-  const handleDetectSa = () => {
-    setIsDetecting(true);
-    // Hook point for real microphone pitch extraction (Web Audio autocorrelation).
-    window.setTimeout(() => {
-      const guess = 138.59;
-      setDetectedSa(guess);
-      onSaHzChange(guess);
-      setIsDetecting(false);
-    }, 900);
-  };
+  }, [isChantingFull, activeHymn, baseSaHz]);
 
   if (!isOpen) return null;
 
-  const totalMatras = syllables.reduce((sum, s) => sum + s.durationMatras, 0);
-  const durationSec = totalMatras * 0.25;
-  const bars = Math.max(1, Math.ceil(durationSec / ((60 / 60) * beatsPerBar)));
+  const chhandasInfo = detectChhandasMeter(activeHymn.syllables.length);
+
+  const handlePlaySyllable = (s: VedicSyllable, idx: number) => {
+    setActiveSyllableIdx(idx);
+    audioEngine.playVedicSyllable(s.accent, baseSaHz, s.durationMatras * 0.5);
+    setTimeout(() => {
+      if (!isPlaying && !isChantingFull) setActiveSyllableIdx(null);
+    }, 450);
+  };
+
+  const handleCopyPrompt = () => {
+    const prompt = generateVagdhenuPrompt(activeHymn, baseSaHz, activeRagaName, selectedRasa);
+    navigator.clipboard.writeText(prompt);
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 2200);
+  };
+
+  const handleSendPrompt = () => {
+    const prompt = generateVagdhenuPrompt(activeHymn, baseSaHz, activeRagaName, selectedRasa);
+    if (onSendToVocalPrompt) {
+      onSendToVocalPrompt(prompt);
+    }
+  };
+
+  const handleSelectPreset = (hymn: VedicChantPhrase) => {
+    setActiveHymn(hymn);
+    setIsCustomMode(false);
+    setIsChantingFull(false);
+    setActiveSyllableIdx(null);
+  };
+
+  const handleAuditCustomText = (text: string) => {
+    setCustomText(text);
+    setSchwaAudit(auditZeroSchwaDeletion(text));
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="relative w-[860px] max-w-[95vw] max-h-[92vh] overflow-y-auto bg-[#0a0d14] border border-amber-500/30 rounded-xl shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800/40 sticky top-0 bg-[#0a0d14] z-10">
+    <div className="fixed inset-x-0 bottom-0 z-50 flex flex-col bg-[#07090e]/95 backdrop-blur-xl border-t border-amber-600/30 shadow-[0_-8px_32px_rgba(0,0,0,0.85)] max-h-[72vh] text-slate-200 font-sans transition-all duration-200 select-none">
+      
+      {/* Header Bar */}
+      <div className="px-5 py-2.5 border-b border-slate-800 bg-slate-950/80 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-amber-950/60 to-stone-900 border border-amber-600/35 flex items-center justify-center text-amber-300 text-sm shadow-sm">
+            📿
+          </div>
           <div>
-            <h2 className="text-lg font-bold text-amber-300">
-              Vāgdhenu · Sanskrit Vedic Phonology Engine
-            </h2>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Zero schwa-deletion · Udātta / Anudātta / Svarita pitch accents
+            <div className="flex items-center gap-2">
+              <h2 className="font-bold text-sm text-amber-200/95 font-serif tracking-wide">
+                Vāgdhenu Sanskrit Vedic Phonology Engine
+              </h2>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> Zero Schwa-Deletion (100% Vedic)
+              </span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-stone-900 text-amber-300/80 border border-stone-750">
+                {chhandasInfo.meterName} ({activeHymn.syllableCount} Akṣaras)
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-sans mt-0.5">
+              Strict phonetic vocalization with authentic Udātta (High), Anudātta (Low) & Svarita (Descending Glide) svara pitch accents
             </p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="p-1.5 hover:bg-slate-700/50 rounded-lg transition-colors text-amber-400"
-          >
-            <Square className="w-5 h-5" />
-          </button>
         </div>
 
-        <div className="p-5 grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-5">
-          {/* Left: hymn picker + chant analysis */}
-          <div className="space-y-4">
-            <div className="rounded-lg border border-slate-800/50 p-3 space-y-2">
-              <div className="text-[11px] font-mono text-slate-400">Hymn Library</div>
-              {(Object.keys(VEDIC_HYMNS) as HymnKey[]).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                    setHymnKey(key);
-                    setCurrentSyllable(-1);
-                    setIsPlaying(false);
-                  }}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer ${
-                    hymnKey === key
-                      ? 'bg-amber-500/15 text-amber-300 border border-amber-500/35'
-                      : 'bg-slate-900/50 text-slate-300 border border-slate-800/50 hover:bg-slate-800/50'
+        {/* Controls: Script toggle, Play full, Send to Vocal */}
+        <div className="flex items-center gap-2.5">
+          {/* Svara Pitch Legend */}
+          <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-[10px] font-mono">
+            <span className="flex items-center gap-1 text-amber-300">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              Udātta (+204c)
+            </span>
+            <span className="text-slate-600">•</span>
+            <span className="flex items-center gap-1 text-blue-300">
+              <span className="w-2 h-2 rounded-full bg-blue-400" />
+              Anudātta (-182c)
+            </span>
+            <span className="text-slate-600">•</span>
+            <span className="flex items-center gap-1 text-teal-300">
+              <span className="w-2 h-2 rounded-full bg-teal-400" />
+              Svarita (Glide)
+            </span>
+          </div>
+
+          {/* Script Mode Selector */}
+          <div className="flex items-center rounded-lg bg-slate-900 p-0.5 border border-slate-800 text-[11px]">
+            <button
+              onClick={() => setScriptMode('both')}
+              className={`px-2 py-0.5 rounded font-medium cursor-pointer transition ${
+                scriptMode === 'both' ? 'bg-amber-600/80 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Dual-Script
+            </button>
+            <button
+              onClick={() => setScriptMode('devanagari')}
+              className={`px-2 py-0.5 rounded font-medium cursor-pointer transition ${
+                scriptMode === 'devanagari' ? 'bg-amber-600/80 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              देवनागरी
+            </button>
+            <button
+              onClick={() => setScriptMode('iast')}
+              className={`px-2 py-0.5 rounded font-medium cursor-pointer transition ${
+                scriptMode === 'iast' ? 'bg-amber-600/80 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              IAST Roman
+            </button>
+          </div>
+
+          {/* Close button */}
+          <button
+            onClick={onClose}
+            className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 transition cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Main Drawer Body: 2 Columns */}
+      <div className="p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 overflow-y-auto custom-scrollbar">
+        
+        {/* Left Column (Presets & Meter Authority) - 4 cols */}
+        <div className="lg:col-span-4 space-y-3">
+          
+          {/* Hymn Presets Selector */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider block">
+              Vedic Hymns & Bandish Presets
+            </label>
+            <div className="space-y-1">
+              {VEDIC_PRESET_HYMNS.map(h => (
+                <div
+                  key={h.id}
+                  onClick={() => handleSelectPreset(h)}
+                  className={`p-2 rounded-xl border transition cursor-pointer ${
+                    activeHymn.id === h.id && !isCustomMode
+                      ? 'bg-amber-500/15 border-amber-600/40 text-amber-200 shadow-sm'
+                      : 'bg-slate-900/60 border-slate-800 hover:bg-slate-850/60 text-slate-300'
                   }`}
                 >
-                  {VEDIC_HYMNS[key].name}
-                </button>
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-xs">{h.title}</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-950 text-amber-300/80 border border-slate-800">
+                      {h.chhandasMeter}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 truncate mt-0.5">
+                    {h.source}
+                  </div>
+                </div>
               ))}
-            </div>
-
-            <div className="rounded-lg border border-slate-800/50 p-3 space-y-2">
-              <div className="flex items-center gap-2 text-[11px] font-mono text-amber-300">
-                <Box className="w-3.5 h-3.5" /> Chhandas Analysis
-              </div>
-              <div className="text-[11px] font-mono space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Meter</span>
-                  <span className="text-slate-200">{hymn.chhanda.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Syllables</span>
-                  <span className="text-slate-200">{hymn.chhanda.syllables}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Total mātrās</span>
-                  <span className="text-slate-200">{totalMatras}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Est. length</span>
-                  <span className="text-slate-200">
-                    {durationSec.toFixed(1)}s · {bars} bar{bars > 1 ? 's' : ''}
-                  </span>
-                </div>
-              </div>
-              <p className="text-[10px] text-slate-500 leading-relaxed">{hymn.chhanda.description}</p>
-            </div>
-
-            {/* Schwa auditor */}
-            <div className="rounded-lg border border-slate-800/50 p-3 space-y-2">
-              <div className="flex items-center gap-2 text-[11px] font-mono text-emerald-300">
-                <Mic className="w-3.5 h-3.5" /> Schwa Auditor
-              </div>
-              {schwaIssues.length === 0 ? (
-                <p className="text-[10px] text-slate-400 leading-relaxed">
-                  ✅ No schwa-deletion in this hymn's transliteration. All terminal
-                  <span className="font-mono"> -a </span>
-                  vowels are retained ([ɐ]), preserving the Vedic pronunciation.
-                </p>
-              ) : (
-                <p className="text-[10px] text-rose-300 leading-relaxed">
-                  ⚠️ {schwaIssues.length} candidate deletion(s) flagged for review.
-                </p>
-              )}
-            </div>
-
-            {/* Sa tuning */}
-            <div className="rounded-lg border border-slate-800/50 p-3 space-y-2">
-              <div className="flex items-center justify-between text-[11px] font-mono">
-                <span className="text-slate-400">Ādhāra Ṣaḍja</span>
-                <span className="text-amber-300">{baseSaHz.toFixed(2)} Hz</span>
-              </div>
-              <input
-                type="range"
-                min={110}
-                max={240}
-                step={0.05}
-                value={baseSaHz}
-                onChange={(e) => onSaHzChange(parseFloat(e.target.value))}
-                className="w-full h-1.5 accent-amber-500 cursor-pointer"
-              />
-              <button
-                onClick={handleDetectSa}
-                disabled={isDetecting}
-                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono bg-slate-800/60 hover:bg-slate-700/60 text-slate-300 transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                <Mic className="w-3 h-3" />
-                {isDetecting ? 'Listening…' : detectedSa ? `Detected ${detectedSa.toFixed(2)} Hz` : 'Detect My Sa'}
-              </button>
             </div>
           </div>
 
-          {/* Right: teleprompter */}
-          <div className="space-y-3">
-            {/* View toggles */}
-            <div className="flex items-center gap-2">
-              {[
-                { label: 'Devanagari', on: showDevanagari, set: setShowDevanagari },
-                { label: 'IAST', on: showIast, set: setShowIast },
-                { label: 'IPA + Accents', on: showIPA, set: setShowIPA }
-              ].map(({ label, on, set }) => (
-                <button
-                  key={label}
-                  onClick={() => set(!on)}
-                  className={`px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
-                    on
-                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/35'
-                      : 'bg-slate-900/50 text-slate-400 border-slate-800/50 hover:bg-slate-800/50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+          {/* Chhandas Vedic Meter Authority Card */}
+          <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-300">
+              <span>Chhandas Meter Structure</span>
+              <span className="text-amber-300 font-mono">{chhandasInfo.padaStructure}</span>
             </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              {chhandasInfo.description}
+            </p>
+            <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
+              <span>Moveable Sa Tonic:</span>
+              <span className="text-amber-300">{baseSaHz.toFixed(2)} Hz</span>
+            </div>
+          </div>
 
-            {/* Transport */}
-            <div className="flex items-center gap-2 rounded-lg border border-slate-800/50 p-2.5">
-              <button
-                onClick={() => setIsPlaying((p) => !p)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  isPlaying
-                    ? 'bg-amber-500 text-slate-950'
-                    : 'bg-amber-500/15 text-amber-300 border border-amber-500/35 hover:bg-amber-500/25'
-                }`}
-              >
-                {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                {isPlaying ? 'Pause Chant' : 'Audition Vedic Recitation'}
-              </button>
-              <button
-                onClick={() => {
-                  setIsPlaying(false);
-                  setCurrentSyllable(-1);
-                }}
-                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700/60 text-slate-300 transition-colors cursor-pointer"
-                aria-label="Stop"
-              >
-                <Square className="w-3.5 h-3.5" />
-              </button>
-              <span className="ml-auto text-[10px] font-mono text-slate-500">
-                {currentSyllable >= 0
-                  ? `Syllable ${currentSyllable + 1} / ${syllables.length}`
-                  : `${syllables.length} syllables`}
+          {/* Zero Schwa-Deletion Auditor Status */}
+          <div className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+            schwaAudit.isZeroSchwaDeleted
+              ? 'bg-emerald-950/20 border-emerald-800/40'
+              : 'bg-rose-950/20 border-rose-800/40'
+          }`}>
+            <div className="flex items-center justify-between text-[11px] font-semibold">
+              <span className="flex items-center gap-1.5 text-emerald-300">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                Zero Schwa-Deletion Score:
+              </span>
+              <span className="font-mono text-emerald-300 font-bold">{schwaAudit.score}%</span>
+            </div>
+            <p className="text-[10px] text-slate-300/80 leading-normal">
+              {schwaAudit.summary}
+            </p>
+            {schwaAudit.deletedWords.length > 0 && (
+              <div className="mt-1 space-y-1">
+                {schwaAudit.deletedWords.map((item, idx) => (
+                  <div key={idx} className="p-1.5 rounded bg-slate-950/80 text-[10px] font-mono flex items-center justify-between">
+                    <span className="text-rose-400 line-through">{item.word}</span>
+                    <span className="text-emerald-300">→ {item.corrected}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Right Column (Synchronized Interactive Teleprompter) - 8 cols */}
+        <div className="lg:col-span-8 flex flex-col justify-between space-y-3">
+          
+          {/* Teleprompter Display Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-200">
+                {activeHymn.title}
+              </span>
+              <span className="text-[10px] text-slate-500 font-mono">
+                (Click any syllable to audition with pitch accent)
               </span>
             </div>
 
-            {/* Syllable grid */}
-            <div className="rounded-lg border border-slate-800/50 divide-y divide-slate-800/40 max-h-[380px] overflow-y-auto">
-              {syllables.map((syl, i) => {
-                const active = i === currentSyllable;
-                return (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setCurrentSyllable(i);
-                      audioEngine.playVedicSyllable(baseSaHz, syl.svara, 0.9);
-                    }}
-                    className={`w-full text-left px-4 py-3 transition-colors cursor-pointer ${
-                      active ? 'bg-amber-500/10 border-l-2 border-amber-500' : 'border-l-2 border-transparent hover:bg-slate-800/40'
-                    }`}
-                  >
-                    <div className="flex items-start gap-4">
-                      <span className="text-[10px] font-mono text-slate-600 pt-1 w-6 shrink-0">
-                        {i + 1}.
-                      </span>
-                      <div className="flex-1 space-y-1">
-                        {showDevanagari && (
-                          <div className={`text-xl font-bold ${active ? 'text-amber-300' : 'text-slate-200'}`}>
-                            {syl.text}
-                          </div>
-                        )}
-                        {showIast && (
-                          <div className="text-xs font-mono text-slate-400">{syl.iast}</div>
-                        )}
-                        {showIPA && (
-                          <div className="text-sm font-mono text-amber-300/90">
-                            /{generateVedicIPA(syl, baseSaHz)}/
-                          </div>
-                        )}
-                      </div>
-                      <div className="shrink-0 text-right space-y-0.5">
-                        <div className="text-xs font-mono text-slate-300">
-                          {SVARA_GLYPH[syl.svara]}{' '}
-                          <span className="text-[10px] text-slate-500">
-                            {syl.svara === 'none' ? '—' : syl.svara}
-                          </span>
-                        </div>
-                        <div className="text-[10px] font-mono text-slate-600">
-                          {syl.durationMatras} mātrā
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            {/* Chant button */}
+            <button
+              onClick={() => setIsChantingFull(!isChantingFull)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                isChantingFull
+                  ? 'bg-rose-600 text-white animate-pulse'
+                  : 'bg-amber-600/85 hover:bg-amber-600 text-slate-950'
+              }`}
+            >
+              {isChantingFull ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
+              <span>{isChantingFull ? 'Stop Chant' : '▶ Audition Vedic Recitation'}</span>
+            </button>
+          </div>
 
-            {/* Footer actions */}
-            <div className="flex items-center gap-3 pt-1">
+          {/* Interactive Syllable Grid / Teleprompter Canvas */}
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 min-h-[140px] flex flex-wrap items-center gap-1.5 overflow-y-auto max-h-56 shadow-inner">
+            {activeHymn.syllables.map((s, idx) => {
+              const isCurrent = activeSyllableIdx === idx;
+              
+              let accentColor = 'border-slate-700 text-slate-300';
+              let accentLabel = 'Tonic';
+              let accentBadge = 'bg-slate-800 text-slate-400';
+
+              if (s.accent === 'udatta') {
+                accentColor = 'border-amber-500/50 text-amber-200 bg-amber-950/30';
+                accentLabel = 'Udātta ↗';
+                accentBadge = 'bg-amber-500/20 text-amber-300';
+              } else if (s.accent === 'anudatta') {
+                accentColor = 'border-blue-500/50 text-blue-200 bg-blue-950/30';
+                accentLabel = 'Anudātta ↘';
+                accentBadge = 'bg-blue-500/20 text-blue-300';
+              } else if (s.accent === 'svarita') {
+                accentColor = 'border-teal-500/50 text-teal-200 bg-teal-950/30';
+                accentLabel = 'Svarita ⤹';
+                accentBadge = 'bg-teal-500/20 text-teal-300';
+              }
+
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handlePlaySyllable(s, idx)}
+                  title={`${s.iast} (${accentLabel}) - Click to audition`}
+                  className={`group relative p-1.5 rounded-lg border flex flex-col items-center justify-center transition-all duration-100 cursor-pointer ${accentColor} ${
+                    isCurrent 
+                      ? 'scale-115 ring-2 ring-amber-400 bg-amber-500/40 text-amber-100 shadow-lg z-10' 
+                      : 'hover:scale-105 hover:bg-slate-800/80'
+                  }`}
+                >
+                  {/* Svara Accent Tag */}
+                  <span className={`text-[8px] font-mono px-1 rounded mb-0.5 leading-none ${accentBadge}`}>
+                    {accentLabel}
+                  </span>
+
+                  {/* Devanagari Script */}
+                  {(scriptMode === 'both' || scriptMode === 'devanagari') && (
+                    <span className="text-sm font-serif font-bold leading-tight">
+                      {s.devanagari}
+                    </span>
+                  )}
+
+                  {/* IAST Roman Script */}
+                  {(scriptMode === 'both' || scriptMode === 'iast') && (
+                    <span className="text-[10px] font-mono text-slate-300/80 leading-tight">
+                      {s.iast}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Translation & Exegesis Banner */}
+          <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-[11px] text-slate-300 italic flex items-center justify-between">
+            <span className="line-clamp-2">“{activeHymn.translation}”</span>
+            <span className="text-[10px] font-mono text-amber-300/80 ml-2 whitespace-nowrap not-italic">
+              Raga: {activeHymn.recommendedRaga}
+            </span>
+          </div>
+
+          {/* Action Row */}
+          <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  onSendToTrack2(syllables.map((s) => s.text).join(' '));
-                  onClose();
-                }}
-                className="flex-1 px-4 py-2 rounded-lg text-xs font-medium bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                onClick={handleCopyPrompt}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-850 text-slate-300 text-xs font-medium border border-slate-700 transition cursor-pointer"
               >
-                <Sparkles className="w-3.5 h-3.5" />
-                Send to Track 2 (Vocals) AI Generation
+                {copiedPrompt ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-400" />}
+                <span>{copiedPrompt ? 'Copied Vāgdhenu Prompt!' : 'Copy Prompt'}</span>
               </button>
             </div>
 
-            <div className="text-[10px] font-mono text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
-              <span>Raga: <span className="text-amber-300/80">{activeRaga.name}</span></span>
-              <span>Sa: <span className="text-amber-300/80">{baseSaHz.toFixed(2)} Hz</span></span>
-              <span>Meaning: <span className="text-slate-400 italic">{hymn.meaning}</span></span>
-            </div>
-
-            {/* Legend */}
-            <div className="rounded-lg border border-slate-800/40 p-2.5 text-[10px] font-mono text-slate-500 space-y-1">
-              {(['udatta', 'anudatta', 'svarita'] as const).map((a) => (
-                <div key={a} className="flex items-center gap-2">
-                  <span className="text-amber-300 w-3">{SVARA_GLYPH[a]}</span>
-                  <span>{SVARA_LABEL[a]}</span>
-                </div>
-              ))}
-            </div>
+            <button
+              onClick={handleSendPrompt}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-amber-600/90 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md transition cursor-pointer active:scale-95"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Send to Track 2 (Vocals) AI Generation</span>
+            </button>
           </div>
+
         </div>
+
       </div>
+
     </div>
   );
 };

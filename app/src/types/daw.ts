@@ -34,9 +34,21 @@ export interface AudioClip {
   name: string;
   startBar: number;
   durationBars: number;
+  fadeInBars?: number;
+  fadeOutBars?: number;
   color?: string;
   swaraNotes?: { swara: string; pitchMidi: number; bar: number; duration: number }[];
   waveformPoints?: number[];
+  audioBuffer?: AudioBuffer;
+  audioUrl?: string;
+}
+
+export interface SpatialCoordinates {
+  azimuth: number; // -180 to 180 degrees (0 = center front, 90 = right, -90 = left, 180/-180 = rear)
+  elevation: number; // -90 to +90 degrees (0 = ear level, +90 = zenith/overhead, -90 = nadir/floor)
+  distance: number; // 0.1 to 10 meters (radial distance from listener)
+  binauralHrtf: boolean; // true for HRTF 3D spatialization, false for standard stereo pan
+  spread: number; // 0 to 1 (source width / diffuseness)
 }
 
 export interface Track {
@@ -53,8 +65,11 @@ export interface Track {
   takes: AudioTake[];
   activeTakeIndex: number;
   clips: AudioClip[];
+  activeInstrument?: string;
   hypersonicAir: boolean; // 20k-48k Hz
   somaticSub: boolean; // 10-20 Hz
+  spatial?: SpatialCoordinates;
+  plugins?: PluginInstance[];
 }
 
 export type RasaType = 
@@ -128,3 +143,134 @@ export interface TransitionFXState {
   preDropSilence: boolean;
   saTuned: boolean;
 }
+
+export type MetronomeTimbre = 'sa-harmonic' | 'woodblock' | 'manjira';
+
+export type VedicSvaraAccent = 'udatta' | 'anudatta' | 'svarita' | 'neutral';
+
+export interface VedicSyllable {
+  devanagari: string;
+  iast: string;
+  accent: VedicSvaraAccent;
+  pitchOffsetCents?: number;
+  durationMatras: number;
+  isSchwaPreserved: boolean;
+}
+
+export interface VedicChantPhrase {
+  id: string;
+  title: string;
+  source: string;
+  chhandasMeter: 'Gayatri' | 'Anushtubh' | 'Trishtubh' | 'Jagati' | 'Custom';
+  syllableCount: number;
+  devanagariText: string;
+  iastText: string;
+  syllables: VedicSyllable[];
+  translation: string;
+  recommendedRaga: string;
+}
+
+export interface MidiDevice {
+  id: string;
+  name: string;
+  manufacturer: string;
+  state: 'connected' | 'disconnected';
+  type: 'input' | 'output';
+}
+
+export interface MpeConfiguration {
+  enabled: boolean;
+  pitchBendRangeSemitones: number; // e.g. 48 for MPE, 2 for standard
+  masterChannel: number; // 1 or 16
+  pressureSensitivity: number; // 0.1 to 2.0
+  timbreCc: number; // default 74
+}
+
+export interface MidiMapping {
+  id: string;
+  paramKey: string;
+  trackId?: string;
+  channel: number; // 0 = all channels, 1-16
+  ccNumber: number; // 0-127
+  minVal: number;
+  maxVal: number;
+  paramLabel: string;
+  inverted?: boolean;
+}
+
+export interface MidiLiveTelemetry {
+  lastEventType: 'noteon' | 'noteoff' | 'pitchbend' | 'aftertouch' | 'cc';
+  channel: number;
+  noteNumber?: number;
+  noteName?: string;
+  svaraName?: string;
+  frequencyHz?: number;
+  centDeviation?: number;
+  velocity?: number;
+  pitchBendCents?: number;
+  pressure?: number;
+  ccNumber?: number;
+  ccValue?: number;
+  timestamp: number;
+}
+
+export type PluginType = 'eq' | 'tape' | 'reverb' | 'sub_braam' | 'compressor';
+
+export interface PluginInstance {
+  id: string;
+  type: PluginType;
+  name: string;
+  sanskritTitle: string;
+  enabled: boolean;
+  dryWet: number; // 0 to 1
+  params: Record<string, any>;
+  trackId?: string; // Track ID or 'master'
+  slotIndex: number;
+}
+
+export type ClassicalMovementType = 
+  | 'alap'          // Unmetered, contemplative raga exploration, zero percussion
+  | 'jor'           // Steady pulse emerges, melodic pulse without drums
+  | 'jhala'         // Rapid rhythmic strumming, chikari acceleration
+  | 'vilambit_gat'  // Slow tempo formal composition in Tala with Tabla entry
+  | 'madhya_gat'    // Medium tempo composition, taans and layakari
+  | 'drut_gat'      // Fast tempo composition, energetic variations
+  | 'jhala_climax'  // Final high-speed climax
+  | 'tihai';        // Triple polyrhythmic cadence resolving on Sam
+
+export type WesternStructureType =
+  | 'intro'
+  | 'verse'
+  | 'pre_chorus'
+  | 'chorus'
+  | 'bridge'
+  | 'breakdown'
+  | 'drop'
+  | 'outro';
+
+export interface ArrangementSection {
+  id: string;
+  name: string;
+  sanskritName: string;
+  movementType: ClassicalMovementType;
+  westernEquivalent: WesternStructureType;
+  startBar: number;
+  durationBars: number;
+  color: string;
+  targetBpm: number;
+  tempoRamp?: 'none' | 'linear_accel' | 'exp_accel';
+  activeRoles: TrackRole[]; // Which tracks are active in this section
+  description: string;
+  energyLevel: number; // 1 to 5
+}
+
+export interface ArrangementPreset {
+  id: string;
+  name: string;
+  sanskritTitle: string;
+  description: string;
+  totalBars: number;
+  suggestedBpm: number;
+  sections: Omit<ArrangementSection, 'id'>[];
+}
+

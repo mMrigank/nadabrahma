@@ -4,7 +4,16 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕉️</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nādabrahma DAW — Universal AI Sound, Voice & Music Workstation</title>
+    <title>Nāḍ Universal Audio Workstation</title>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        document.body.innerHTML = '<div style="color:red; font-family:monospace; padding:20px; z-index:99999; position:absolute; top:0; left:0; background:black; width:100vw; height:100vh;">' + 
+          '<h1>RUNTIME ERROR!</h1>' +
+          '<p>' + msg + '</p>' +
+          '<pre>' + (error ? error.stack : '') + '</pre>' +
+        '</div>';
+      };
+    </script>
     <meta name="description" content="Next-generation Universal AI Audio Workstation fusing Indian Classical Ragas, Vedic Sanskrit Chanting, Multi-Model AI Orchestration, and Extended Spectrum 96kHz Audio." />
     <!-- Google Fonts: Outfit & JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">

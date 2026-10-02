@@ -1,177 +1,148 @@
-// AI Model Definitions for Nādabrahma DAW
-import type { AIModel } from '../types/daw';
+import { AIModel, TrackRole } from '../types/daw';
 
-export type { AIModel };
-
-export interface AIModelSpec {
+export interface AIModelMeta {
   id: AIModel;
   name: string;
-  vramGB: number;
-  quantization: string;
-  acceleration: string[];
-  description: string;
+  shortName: string;
+  provider: string;
+  architecture: string;
   memoryFootprintGB: number;
+  quantization: string;
+  hardwareEngine: 'Apple MLX (GPU / ANE)' | 'Apple MLX / audio.cpp (GPU / ANE)' | 'audio.cpp Metal (GPU / UMA)' | 'Metal Performance Shaders (MPS)' | 'Web Audio SIMD Wasm';
+  strengths: string;
+  category: 'Full-Song & Arrangement' | 'Vocal Nuance & Solo' | 'Microtonal Formants' | 'Extended Spectrum & FX' | 'Vedic Phonetics' | 'Zero-Latency Offline';
+  recommendedTrackRoles: TrackRole[];
+  typicalLatencySec: number;
+  supportedSampleRate: string;
+  description: string;
 }
 
-// Comprehensive hardware-quantized model definitions for all 6 audio generation engines
-export const aiModelData: AIModelSpec[] = [
-  {
+export const AI_MODELS_METADATA: Record<AIModel, AIModelMeta> = {
+  yue_2: {
     id: 'yue_2',
-    name: 'YuE 2 (Full-Song Generation)',
-    vramGB: 4.2,
-    quantization: '4-bit INT4',
-    acceleration: ['Apple MLX GPU', 'Apple ANE'],
-    description: 'Multi-track verse/chorus generator with coherent long-form structure',
-    memoryFootprintGB: 4.2
+    name: 'YuE2 3B BF16 ⭐ Primary',
+    shortName: 'YuE 2',
+    provider: 'Tencent & Open-Source (audio.cpp)',
+    architecture: 'Dual-Track LM + Flow Matching Diffusion',
+    memoryFootprintGB: 6.5,
+    quantization: 'BF16 (audio.cpp + Metal — zero-copy UMA)',
+    hardwareEngine: 'Apple MLX (GPU / ANE)',
+    strengths: 'Full multitrack verse/chorus structure, dual-conditioned acoustics, long-context coherence',
+    category: 'Full-Song & Arrangement',
+    recommendedTrackRoles: ['solo_instrument', 'drone', 'ambient_pad'],
+    typicalLatencySec: 1.4,
+    supportedSampleRate: '48 kHz (upsampled to 96 kHz in frontend)',
+    description: 'BF16 precision model via audio.cpp on Apple Silicon. Primary instrumental model. Loads on-demand, unloads immediately after generation. Zero Python overhead.'
   },
-  {
+  minimax_3: {
     id: 'minimax_3',
-    name: 'MiniMax Music 01 / 3',
-    vramGB: 5.1,
-    quantization: '8-bit INT8',
-    acceleration: ['Apple MPS', 'Apple MLX'],
-    description: 'Ultra-expressive vocal phrasing and improvisation with microtonal control',
-    memoryFootprintGB: 5.1
+    name: 'MiniMax Music 3 (backup)',
+    shortName: 'MiniMax 3',
+    provider: 'MiniMax AI (audio.cpp v0.7+)',
+    architecture: 'Transformer DiT + Direct Voice Latent',
+    memoryFootprintGB: 9.5,
+    quantization: 'GGUF Q8 (audio.cpp + Metal)',
+    hardwareEngine: 'Metal Performance Shaders (MPS)',
+    strengths: 'Different sonic character for alternate iterations of instrumental tracks',
+    category: 'Full-Song & Arrangement',
+    recommendedTrackRoles: ['solo_instrument', 'ambient_pad'],
+    typicalLatencySec: 1.8,
+    supportedSampleRate: '48 kHz (upsampled to 96 kHz in frontend)',
+    description: 'GGUF model via audio.cpp. Backup instrumental model for alternate sonic iterations when YuE2 output needs variety. Heavier footprint — swaps with YuE2 on demand.'
   },
-  {
+  ace_studio: {
     id: 'ace_studio',
-    name: 'ACE Studio 2.0',
-    vramGB: 3.4,
-    quantization: 'FP16',
-    acceleration: ['Apple Metal', 'CoreAudio'],
-    description: 'Formant-controlled virtual vocal synthesis with microtonal pitch bends',
-    memoryFootprintGB: 3.4
+    name: 'ACE-Step 1.5 (Vocal)',
+    shortName: 'ACE-Step',
+    provider: 'ACE-Step Open-Source (audio.cpp)',
+    architecture: 'Diffusion Transformer + Qwen3 LM Planner',
+    memoryFootprintGB: 9.0,
+    quantization: 'GGUF Q8 SFT variant (audio.cpp + Metal)',
+    hardwareEngine: 'Apple MLX (GPU / ANE)',
+    strengths: 'Aalap, humming, oohs, gamaka ornaments, Hindi lyrics, Sanskrit pronunciation, Indian fusion vocals',
+    category: 'Vocal Nuance & Solo',
+    recommendedTrackRoles: ['lead_vocal', 'vedic_chant', 'choral_harmony'],
+    typicalLatencySec: 0.8,
+    supportedSampleRate: '48 kHz (upsampled to 96 kHz in frontend)',
+    description: 'GGUF SFT vocal model via audio.cpp. Handles wordless aalap/humming (empty lyrics), Hindi/Sanskrit text, and gamaka pitch oscillations. Strictly vocal — never instrumental.'
   },
-  {
+  stable_audio_3: {
     id: 'stable_audio_3',
-    name: 'Stable Audio 3',
-    vramGB: 2.8,
-    quantization: '4-bit INT4',
-    acceleration: ['Apple MLX GPU'],
-    description: 'Extended spectrum text-to-audio acoustic textures, 48k air, and 10Hz sub drops',
-    memoryFootprintGB: 2.8
+    name: 'Stable Audio 3 Medium',
+    shortName: 'Stable Audio 3',
+    provider: 'Stability AI (audio.cpp)',
+    architecture: 'Continuous Latent Diffusion Model (Autoencoder + DiT)',
+    memoryFootprintGB: 4.5,
+    quantization: 'GGUF Medium (audio.cpp + Metal) — Small excluded',
+    hardwareEngine: 'Apple MLX (GPU / ANE)',
+    strengths: 'Cinematic risers/drops, somatic infrasound (10-20Hz), hypersonic air textures (20k-48kHz), ambient pads',
+    category: 'Extended Spectrum & FX',
+    recommendedTrackRoles: ['risers_drops', 'ambient_pad', 'percussion_tala'],
+    typicalLatencySec: 1.1,
+    supportedSampleRate: '48 kHz (upsampled to 96 kHz in frontend)',
+    description: 'GGUF Medium model via audio.cpp. Small variant excluded (mushy tonal contrast). Used for extended-spectrum FX: cinematic textures, somatic sub-bass, hypersonic air sheen. On-demand only.'
   },
-  {
+  vagdhenu: {
     id: 'vagdhenu',
     name: 'Vāgdhenu Sanskrit Vedic Engine',
-    vramGB: 1.8,
-    quantization: 'INT8',
-    acceleration: ['Apple MLX GPU', 'Apple ANE', 'CoreAudio Wasm'],
-    description: 'Sacred Vedic recitation with Udātta/Anudātta/Svarita pitch accents and zero schwa-deletion',
-    memoryFootprintGB: 1.8
+    shortName: 'Vāgdhenu',
+    provider: 'Nādabrahma Native Phonology Core',
+    architecture: 'Acoustic Vedic Phoneme Formant + Prosody Model',
+    memoryFootprintGB: 1.8,
+    quantization: 'Q8 CoreAudio Wasm/MLX',
+    hardwareEngine: 'Apple MLX / audio.cpp (GPU / ANE)',
+    strengths: 'Sacred Sanskrit Vedic recitation, Udātta/Anudātta/Svarita pitch accents, zero schwa-deletion',
+    category: 'Vedic Phonetics',
+    recommendedTrackRoles: ['vedic_chant', 'lead_vocal'],
+    typicalLatencySec: 0.4,
+    supportedSampleRate: '96 kHz / 32-bit Float',
+    description: 'Q8 optimized Vedic Sanskrit recitation model. Preserves ancient Chhandas meters with zero colloquial schwa truncation. Loads dynamically on-demand.'
   },
-  {
+  soundfont_native: {
     id: 'soundfont_native',
     name: 'Native Web Audio & Soundfont',
-    vramGB: 0.2,
+    shortName: 'Soundfont Native',
+    provider: 'Nādabrahma Built-in Zero-Latency Core',
+    architecture: 'Wasm Multi-Sample Oscillator Matrix',
+    memoryFootprintGB: 0.2,
     quantization: 'PCM 96kHz / 32-bit float',
-    acceleration: ['Web Audio SIMD Wasm'],
-    description: '0ms latency bit-perfect deterministic offline generator',
-    memoryFootprintGB: 0.2
+    hardwareEngine: 'Web Audio SIMD Wasm',
+    strengths: '0ms latency, zero memory pressure, 100% offline, bit-perfect deterministic playback',
+    category: 'Zero-Latency Offline',
+    recommendedTrackRoles: ['solo_instrument', 'percussion_tala', 'drone', 'ambient_pad'],
+    typicalLatencySec: 0.01,
+    supportedSampleRate: '96 kHz / 32-bit Float',
+    description: 'High-efficiency multi-sample physical modeling engine providing instantaneous zero-latency playback.'
   }
-];
-
-/**
- * Calculate current working memory usage including baseline DAW and loaded models
- */
-export function calculateWorkingMemoryGB(): number {
-  // Base DAW memory footprint (react, audio context, buffers, etc.)
-  const baseDAWGB = 1.2;
-
-  // In a real implementation, we'd track actual model memory usage
-  // For now, we'll simulate based on loaded models
-  const modelsLoaded = getOptimizedLoadedModels().length;
-  const avgModelGB = 2.5; // Average across all models
-
-  return baseDAWGB + (modelsLoaded * avgModelGB);
-}
-
-/**
- * Check if memory usage is within the safe 18GB ceiling
- */
-export function isMemoryWithinSafeCeiling(): boolean {
-  return calculateWorkingMemoryGB() <= 18;
-}
-
-/**
- * Get currently optimized/loaded models based on memory constraints
- */
-export function getOptimizedLoadedModels(): AIModel[] {
-  // In a real implementation, this would check what's actually loaded
-  // For simulation, we'll return a subset that fits in memory
-  const usedGB = calculateWorkingMemoryGB();
-  const availableGB = 18 - usedGB;
-
-  // Sort by memory footprint (smallest first) for optimal loading
-  const sortedModels = [...aiModelData].sort((a, b) => a.memoryFootprintGB - b.memoryFootprintGB);
-
-  const loaded: AIModel[] = [];
-  let currentUsage = 0;
-
-  for (const model of sortedModels) {
-    if (currentUsage + model.memoryFootprintGB <= 16) { // Leave 2GB headroom
-      loaded.push(model.id);
-      currentUsage += model.memoryFootprintGB;
-    } else {
-      break;
-    }
-  }
-
-  return loaded;
-}
-
-/**
- * Handle memory optimization by unloading dormant models
- */
-export async function handleOptimizeMemory(): Promise<void> {
-  // In a real implementation, this would unload models from MLX/Metal
-  // For now, we'll just trigger a recalculation
-  return new Promise(resolve => setTimeout(resolve, 500));
-}
-
-/**
- * Build dual-conditioned prompt combining Raga, Swaras, Vadi/Samvadi, etc.
- */
-export interface RagaToWesternMap {
-  [ragaId: string]: string;
-}
-
-export const RAGA_TO_WESTERN_MAP: RagaToWesternMap = {
-  yaman: 'Lydian Mode (1 - 2 - 3 - #4 - 5 - 6 - 7)',
-  hansadhwani: 'Major Pentatonic with Maj 7th (1 - 2 - 3 - 5 - 7)',
-  darbari: 'Natural Minor (Aeolian Mode with sunken 3rd & 6th)',
-  bhairavi: 'Phrygian Mode (1 - b2 - b3 - 4 - 5 - b6 - b7)',
-  bhoopali: 'Major Pentatonic (1 - 2 - 3 - 5 - 6)',
-  malkauns: 'Minor Pentatonic without 2nd & 5th (1 - b3 - 4 - b6 - b7)',
-  durga: 'Suspended Pentatonic (1 - 2 - 4 - 5 - 6)',
-  marwa: 'Lydian b2 without 5th (1 - b2 - 3 - #4 - 6 - 7)'
 };
 
+export const TOTAL_UNIFIED_MEMORY_GB = 32.0;
+export const MEMORY_CEILING_GB = 14.0; // 12-15GB directive: keeps working memory comfortably inside ceiling leaving 18GB+ for OS and multitasking
+export const DAW_BASE_MEMORY_GB = 1.5; // Baseline DAW + Go server memory
+
 /**
- * Build dual-conditioned prompt for AI models
+ * Calculates total working memory including DAW base footprint and loaded models
  */
-export function buildDualConditionedPrompt(
-  ragaId: string,
-  swaras: string,
-  vadi: string,
-  samvadi: string,
-  moveableSaHz: number,
-  talaName: string,
-  dspTokens: string[]
-): string {
-  const ragaName = ragaId.charAt(0).toUpperCase() + ragaId.slice(1);
-  const westernMode = RAGA_TO_WESTERN_MAP[ragaId as keyof typeof RAGA_TO_WESTERN_MAP] || 'Unknown';
+export function calculateWorkingMemoryGB(loadedModelIds: AIModel[]): number {
+  const modelsMemory = loadedModelIds.reduce((sum, modelId) => {
+    const meta = AI_MODELS_METADATA[modelId];
+    return sum + (meta ? meta.memoryFootprintGB : 0);
+  }, 0);
+  return Math.round((DAW_BASE_MEMORY_GB + modelsMemory) * 10) / 10;
+}
 
-  const components = [
-    `[Raga: ${ragaName}]`,
-    `[Western: ${westernMode}]`,
-    `[Swara: ${swaras}]`,
-    `[Vadi: ${vadi}]`,
-    `[Samvadi: ${samvadi}]`,
-    `[Sa: ${moveableSaHz.toFixed(2)}Hz]`,
-    `[Tala: ${talaName}]`,
-    ...dspTokens
-  ];
+/**
+ * Determines whether loaded models are within the safe 18GB working ceiling
+ */
+export function isMemoryWithinSafeCeiling(loadedModelIds: AIModel[]): boolean {
+  return calculateWorkingMemoryGB(loadedModelIds) <= MEMORY_CEILING_GB;
+}
 
-  return components.join(' ');
+/**
+ * Determines optimal resident models based on active tracks to minimize memory footprint
+ */
+export function getOptimizedLoadedModels(activeTracksModels: AIModel[]): AIModel[] {
+  const set = new Set<AIModel>(['soundfont_native']); // Always keep soundfont loaded
+  activeTracksModels.forEach(m => set.add(m));
+  return Array.from(set);
 }

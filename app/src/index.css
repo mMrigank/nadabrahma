@@ -9,8 +9,8 @@
 
   body {
     font-family: var(--font-sans);
-    background-color: #080a0f;
-    color: #e2e8f0;
+    background-color: #08090d;
+    color: #cbd5e1;
     margin: 0;
     padding: 0;
     height: 100vh;
@@ -20,79 +20,152 @@
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #090c13;
+  background: #08090d;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 4px;
+  background: #1a202c;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #2d3748;
 }
 
-/* Glassmorphism Classes */
+/* Glassmorphism Classes - Mellow Studio Tones */
 .glass-panel {
-  background: rgba(13, 17, 26, 0.78);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  background: rgba(5, 6, 8, 0.88);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.6);
 }
 
 .glass-panel-subtle {
-  background: rgba(17, 24, 39, 0.55);
+  background: rgba(14, 17, 25, 0.6);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .glass-dropdown {
-  background: rgba(10, 14, 23, 0.95);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  background: rgba(8, 9, 12, 0.98);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
 }
 
-/* Glow Utilities */
+/* Glow Utilities - Subtle Mellow Ambience */
 .glow-saffron {
-  box-shadow: 0 0 20px -4px rgba(245, 158, 11, 0.35);
+  box-shadow: 0 0 14px -3px rgba(176, 141, 87, 0.18);
 }
 
 .glow-cyan {
-  box-shadow: 0 0 20px -4px rgba(6, 182, 212, 0.35);
+  box-shadow: 0 0 14px -3px rgba(82, 130, 117, 0.18);
 }
 
 .glow-purple {
-  box-shadow: 0 0 20px -4px rgba(168, 85, 247, 0.35);
+  box-shadow: 0 0 14px -3px rgba(111, 93, 138, 0.18);
 }
 
 /* Meter Pulse Animation */
 @keyframes pulse-glow {
   0%, 100% {
-    opacity: 1;
+    opacity: 0.95;
     transform: scale(1);
   }
   50% {
-    opacity: 0.75;
-    transform: scale(0.96);
+    opacity: 0.8;
+    transform: scale(0.98);
   }
 }
 
 .animate-pulse-glow {
-  animation: pulse-glow 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-/* Tala Beat Pulse */
+/* Tala Beat Pulse - Mellow Terracotta Glow */
 @keyframes sam-pulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-  70% { transform: scale(1.2); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(184, 115, 51, 0.4); }
+  70% { transform: scale(1.15); box-shadow: 0 0 0 6px rgba(184, 115, 51, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(184, 115, 51, 0); }
 }
 
 .animate-sam {
-  animation: sam-pulse 0.6s ease-out;
+  animation: sam-pulse 0.5s ease-out;
+}
+
+/* Sleek Volume Slider with Hidden-by-Default Micro-Knob */
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* WebKit / Blink (Chrome, Safari, Edge) */
+.volume-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 9999px;
+  background: transparent;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  border: 1px solid #b08d57;
+  cursor: pointer;
+  opacity: 0;
+  margin-top: -1.5px; /* (3px - 6px)/2 = -1.5px: perfectly vertically centered over the 3px track */
+  box-shadow: 0 0 4px rgba(176, 141, 87, 0.4);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  transform: scale(0.6);
+}
+
+/* Knob appears when user hovers over the volume container or the slider itself */
+.group\/volume:hover .volume-slider::-webkit-slider-thumb,
+.volume-slider:hover::-webkit-slider-thumb,
+.volume-slider:active::-webkit-slider-thumb {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Firefox */
+.volume-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 9999px;
+  background: transparent;
+  border: none;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  border: 1px solid #b08d57;
+  cursor: pointer;
+  opacity: 0;
+  box-shadow: 0 0 4px rgba(176, 141, 87, 0.4);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  transform: scale(0.6);
+}
+
+.group\/volume:hover .volume-slider::-moz-range-thumb,
+.volume-slider:hover::-moz-range-thumb,
+.volume-slider:active::-moz-range-thumb {
+  opacity: 1;
+  transform: scale(1);
 }

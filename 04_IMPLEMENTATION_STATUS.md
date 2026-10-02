@@ -97,3 +97,12 @@ function so the real implementation can drop in without touching UI.
 * [[Core_Concepts/Sanskrit_Vedic_Engine]]
 * [[Core_Concepts/Multi_Model_AI_Suite]]
 * [[Architecture_Deep_Dives/StemForge_Features]]
+## [2026-09-17] - UI Refinements, Time Signature, and Memory Optimizations
+- Fixed PianoRoll and Timeline Bar 1 alignment.
+- Implemented dynamic Time Signature (default 4/4) support in UI, Timeline, and PianoRoll.
+- Added horizontal scrolling (overflow-x-auto) to PianoRoll grid.
+- Added global keyboard listener (Delete/Backspace) to delete selected MIDI notes in PianoRoll.
+- Cleaned up default clips on fresh project load.
+- Added Save Project (.nad) file picker and Export Master buttons to HeaderHUD.
+- Generated new minimalist, vertical dark-red brand logo.
+

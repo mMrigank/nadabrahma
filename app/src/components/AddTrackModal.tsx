@@ -26,24 +26,24 @@ const ROLES_CATALOG: {
   defaultColor: string;
 }[] = [
   {
-    role: 'lead_vocal',
-    title: 'Lead Vocal (Precision)',
-    icon: '🎤',
-    desc: 'Note-by-note piano roll melody with microtonal Meend glides & phoneme alignment.',
-    recommendedModel: 'ace_studio',
-    modelReason: 'ACE Studio / DiffSinger: Note-level F0 curves in Hz & exact syllable timing.',
-    defaultGroup: 'Vocals',
-    defaultColor: '#f59e0b'
+    role: 'solo_instrument',
+    title: 'Mood Instrument (Lock the Mood)',
+    icon: '🪕',
+    desc: 'Evocative acoustic instrumental music (Sarod, Sitar, Flute) to establish and lock the raga mood and rasa.',
+    recommendedModel: 'soundfont_native',
+    modelReason: 'Native 96kHz acoustic engine tuned to Moveable Sa and 22 Shrutis Just Intonation.',
+    defaultGroup: 'Acoustics',
+    defaultColor: '#b08d57' // Mellow Warm Sandstone
   },
   {
     role: 'vedic_chant',
-    title: 'Vedic / Sanskrit Chant',
-    icon: '🕉️',
-    desc: 'Sacred Sanskrit shlokas and mantras with authentic pārāyaṇa meter and zero schwa deletion.',
+    title: 'Vocals (Chant & Lyrics)',
+    icon: '🎤',
+    desc: 'Lyrical vocals, sacred Sanskrit shlokas, and mantras with authentic pārāyaṇa meter and zero schwa deletion.',
     recommendedModel: 'vagdhenu',
     modelReason: 'Vāgdhenu (IISc Bengaluru): Trained specifically on Sanskrit phonology & Chhandas.',
     defaultGroup: 'Vocals',
-    defaultColor: '#ea580c'
+    defaultColor: '#a06352' // Mellow Terracotta
   },
   {
     role: 'choral_harmony',
@@ -53,7 +53,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'yue_2',
     modelReason: 'YuE 2: Hybrid AR-NAR flow-matching generates rich harmonic vocal layers.',
     defaultGroup: 'Vocals',
-    defaultColor: '#d97706'
+    defaultColor: '#9a7442' // Mellow Amberwood
   },
   {
     role: 'voice_over',
@@ -63,7 +63,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'soundfont_native',
     modelReason: 'Neural VO Engine: Articulate speech with automatic BGM sidechain ducking.',
     defaultGroup: 'Vocals',
-    defaultColor: '#3b82f6'
+    defaultColor: '#566c82' // Mellow Slate
   },
   {
     role: 'drone',
@@ -73,7 +73,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'soundfont_native',
     modelReason: 'Pure 96kHz Lossless Synthesis: Zero latency & mathematically pure acoustic ratios.',
     defaultGroup: 'Acoustics',
-    defaultColor: '#10b981'
+    defaultColor: '#5f7e6e' // Mellow Sage
   },
   {
     role: 'solo_instrument',
@@ -83,7 +83,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'stable_audio_3',
     modelReason: 'Stable Audio 3 / Web MIDI: Generates rich acoustic timbres with continuous expression.',
     defaultGroup: 'Acoustics',
-    defaultColor: '#8b5cf6'
+    defaultColor: '#5d7491' // Mellow Dusty Slate Blue
   },
   {
     role: 'percussion_tala',
@@ -93,7 +93,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'stable_audio_3',
     modelReason: 'Stable Audio 3: Dynamic audio diffusion conditioned on exact Tala beat grid.',
     defaultGroup: 'Percussion',
-    defaultColor: '#ec4899'
+    defaultColor: '#8c7750' // Mellow Warm Teak
   },
   {
     role: 'modern_beats',
@@ -103,7 +103,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'stable_audio_3',
     modelReason: 'Latent Diffusion DiT: Punchy transients and deep low-end frequency extension.',
     defaultGroup: 'Percussion',
-    defaultColor: '#06b6d4'
+    defaultColor: '#4f787f' // Mellow Muted Teal
   },
   {
     role: 'ambient_pad',
@@ -113,7 +113,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'stable_audio_3',
     modelReason: 'Stable Audio 3: Long-form continuous atmospheric soundscapes.',
     defaultGroup: 'Orchestral',
-    defaultColor: '#6366f1'
+    defaultColor: '#6f5d8a' // Mellow Deep Amethyst
   },
   {
     role: 'risers_drops',
@@ -123,7 +123,7 @@ const ROLES_CATALOG: {
     recommendedModel: 'stable_audio_3',
     modelReason: 'Stable Audio 3: Bar-quantized sweeps, braams, and explosive sub-drops.',
     defaultGroup: 'Cinematic FX',
-    defaultColor: '#eab308'
+    defaultColor: '#8f6277' // Mellow Dusty Mauve
   }
 ];
 
@@ -188,16 +188,19 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                       : 'bg-slate-900/60 hover:bg-slate-850 border-slate-800 text-slate-300'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold flex items-center gap-1.5 text-xs">
-                      <span>{cat.icon}</span>
-                      <span>{cat.title}</span>
-                    </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-850 border border-slate-700 font-mono text-slate-400">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <span className="shrink-0 text-sm">{cat.icon}</span>
+                    <span className="font-bold text-xs text-slate-100 leading-tight">{cat.title}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 font-mono text-slate-400 whitespace-nowrap">
                       {cat.defaultGroup}
                     </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 font-mono text-amber-300/80 whitespace-nowrap">
+                      {cat.recommendedModel.replace(/_/g, ' ')}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-slate-400 leading-snug">
+                  <p className="text-[10px] text-slate-500 leading-snug line-clamp-2">
                     {cat.desc}
                   </p>
                 </div>

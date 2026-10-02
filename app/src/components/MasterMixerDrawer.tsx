@@ -1,21 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  X, Sliders, Volume2, Waves, Compass, Activity, Download, ShieldCheck, Sparkles, Disc
+  X, Sliders, Volume2, Waves, Compass, Activity, Download, ShieldCheck, Sparkles, Disc, Scissors, Maximize2, Play
 } from 'lucide-react';
 import { audioEngine } from '../lib/webAudioEngine';
+import { Track, SpatialCoordinates } from '../types/daw';
 
 interface MasterMixerDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   isPlaying: boolean;
   busGroups: ('Vocals' | 'Acoustics' | 'Percussion' | 'Orchestral' | 'Cinematic FX')[];
+  onOpenStemForge?: () => void;
+  onOpenSpatialAudio?: () => void;
+  tracks?: Track[];
+  onUpdateTrackSpatial?: (trackId: string, spatial: SpatialCoordinates) => void;
+  onOpenPlugins?: (trackId?: string) => void;
 }
 
 export const MasterMixerDrawer: React.FC<MasterMixerDrawerProps> = ({
   isOpen,
   onClose,
   isPlaying,
-  busGroups
+  busGroups,
+  onOpenStemForge,
+  onOpenSpatialAudio,
+  tracks = [],
+  onUpdateTrackSpatial,
+  onOpenPlugins
 }) => {
   // Quick Master parameters
   const [punch, setPunch] = useState(45);
@@ -357,12 +368,24 @@ export const MasterMixerDrawer: React.FC<MasterMixerDrawerProps> = ({
         {/* Section 3: The Owl 3D Spatializer & Binaural HRTF Pad */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-slate-200 uppercase tracking-wider text-[11px] flex items-center gap-2">
-              <Compass className="w-3.5 h-3.5 text-amber-400" /> The Owl 3D Spatializer (HRTF Binaural)
-            </h3>
-            <span className="text-[10px] text-slate-400 font-mono">
-              X: {spatialX.toFixed(2)} | Y: {spatialY.toFixed(2)} | Elev: {spatialElevation}°
-            </span>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-200 uppercase tracking-wider text-[11px] flex items-center gap-2">
+                <Compass className="w-3.5 h-3.5 text-amber-400" /> The Owl 3D Spatializer (HRTF Binaural)
+              </h3>
+              <span className="text-[10px] text-slate-400 font-mono">
+                X: {spatialX.toFixed(2)} | Y: {spatialY.toFixed(2)} | Elev: {spatialElevation}°
+              </span>
+            </div>
+
+            {onOpenSpatialAudio && (
+              <button
+                onClick={onOpenSpatialAudio}
+                className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-[0_0_8px_rgba(245,158,11,0.2)]"
+              >
+                <Maximize2 className="w-3 h-3 text-amber-400" />
+                <span>Open 3D Radar & Ambisonics Suite</span>
+              </button>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
@@ -372,7 +395,7 @@ export const MasterMixerDrawer: React.FC<MasterMixerDrawerProps> = ({
               ref={padRef}
               onPointerDown={handlePadPointerDown}
               onPointerMove={handlePadPointerMove}
-              className="w-full h-44 bg-slate-950 rounded-xl border border-slate-800 relative cursor-crosshair overflow-hidden touch-none flex items-center justify-center select-none"
+              className="w-full h-44 bg-slate-950 rounded-xl border border-slate-800 relative cursor-crosshair overflow-hidden touch-none flex items-center justify-center select-none group"
             >
               {/* Radar Rings */}
               <div className="absolute w-36 h-36 rounded-full border border-slate-800/80"></div>
@@ -425,8 +448,31 @@ export const MasterMixerDrawer: React.FC<MasterMixerDrawerProps> = ({
                 </div>
               </div>
 
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const az = Math.round((Math.atan2(spatialX, spatialY) * 180) / Math.PI);
+                    const dist = Math.sqrt(spatialX * spatialX + spatialY * spatialY) * 3.0 + 1.0;
+                    audioEngine.playSpatialTrackPreview(az, spatialElevation, dist, 220, 'warm_string', 0.8);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20"
+                >
+                  <Play className="w-3.5 h-3.5 fill-slate-950" />
+                  <span>Audition 3D HRTF</span>
+                </button>
+
+                {onOpenSpatialAudio && (
+                  <button
+                    onClick={onOpenSpatialAudio}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition-all"
+                  >
+                    <span>Stage All Tracks</span>
+                  </button>
+                )}
+              </div>
+
               <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-                <span className="text-amber-300 font-semibold">Head-Related Transfer Function (HRTF)</span> models subtle microsecond interaural time delays and pinna filtering for true 3D headphone staging.
+                <span className="text-amber-300 font-semibold">Head-Related Transfer Function (HRTF)</span> models microsecond interaural time delays and pinna filtering for binaural 3D headphone staging.
               </div>
             </div>
 
@@ -533,6 +579,32 @@ export const MasterMixerDrawer: React.FC<MasterMixerDrawerProps> = ({
               <span className="text-[10px] text-cyan-400/80 mt-0.5">De-bleeded Tracks</span>
             </button>
           </div>
+
+          {onOpenPlugins && (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenPlugins();
+              }}
+              className="w-full mt-3 p-2.5 rounded-xl bg-indigo-950/60 border border-indigo-500/40 hover:bg-indigo-900/70 text-indigo-200 flex items-center justify-center gap-2 transition-all cursor-pointer font-medium text-xs shadow-sm active:scale-95"
+            >
+              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+              <span>🎛️ Master Bus Audio Plugin Rack (NādaEQ, Tape Saturator, Mandir Reverb)</span>
+            </button>
+          )}
+
+          {onOpenStemForge && (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenStemForge();
+              }}
+              className="w-full mt-3 p-2.5 rounded-xl bg-cyan-950/60 border border-cyan-500/40 hover:bg-cyan-900/70 text-cyan-200 flex items-center justify-center gap-2 transition-all cursor-pointer font-medium text-xs shadow-sm active:scale-95"
+            >
+              <Scissors className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Open StemForge AI Separation & Broadcast WAV (iXML/bext) Exporter</span>
+            </button>
+          )}
         </div>
 
       </div>
