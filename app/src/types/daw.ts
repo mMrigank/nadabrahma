@@ -1,5 +1,6 @@
 export type TrackRole = 
   | 'lead_vocal'
+  | 'lead_melody'
   | 'vedic_chant'
   | 'choral_harmony'
   | 'voice_over'
@@ -11,6 +12,7 @@ export type TrackRole =
   | 'risers_drops';
 
 export type AIModel = 
+  | 'ace_step'
   | 'ace_studio'
   | 'yue_2'
   | 'minimax_3'
@@ -70,6 +72,14 @@ export interface Track {
   somaticSub: boolean; // 10-20 Hz
   spatial?: SpatialCoordinates;
   plugins?: PluginInstance[];
+  // OpenStudio-style AI Track fields
+  isAITrack?: boolean;
+  aiModelName?: string;
+  aiWorkflow?: string;
+  aiModelVersion?: string;
+  aiPrompt?: string;
+  aiLyrics?: string;
+  aiStatusState?: 'ready' | 'generating' | 'loading' | 'error';
 }
 
 export type RasaType = 
@@ -133,6 +143,9 @@ export interface DirectorSceneState {
     gamakaDepth: number;  // 0-100%
   };
   pacingBpm: number;
+  isAlap?: boolean;
+  aalapVowel?: 'aaa' | 'ooo' | 'hey' | 'mmm';
+  aalapMovement?: 'vilambit' | 'meend_glides' | 'drut_taans';
 }
 
 export interface TransitionFXState {

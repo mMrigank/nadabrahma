@@ -18,6 +18,22 @@ export interface AIModelMeta {
 }
 
 export const AI_MODELS_METADATA: Record<AIModel, AIModelMeta> = {
+  ace_step: {
+    id: 'ace_step',
+    name: 'ACE-Step 1.5 XL Turbo (OpenStudio)',
+    shortName: 'ACE-Step Turbo',
+    provider: 'ACE-Step / OpenStudio (Apple Metal)',
+    architecture: 'Diffusion Transformer (DiT) + Fast Latent Flow',
+    memoryFootprintGB: 13.3,
+    quantization: 'Original — full precision (BF16 Metal)',
+    hardwareEngine: 'Apple MLX (GPU / ANE)',
+    strengths: 'Full text-to-music generation, multi-stem synthesis, melodic rock, ambient Indian fusion, conditioned vocals & instruments',
+    category: 'Full-Song & Arrangement',
+    recommendedTrackRoles: ['lead_melody', 'lead_vocal', 'solo_instrument'],
+    typicalLatencySec: 1.2,
+    supportedSampleRate: '48 kHz / 96 kHz Native',
+    description: 'Ultra-fast latent diffusion music generation model conditioned on raga harmonic ground and lyric prosody.'
+  },
   yue_2: {
     id: 'yue_2',
     name: 'YuE2 3B BF16 ⭐ Primary',

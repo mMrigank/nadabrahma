@@ -3,11 +3,12 @@ import {
   Volume2, VolumeX, RotateCcw, 
   ChevronRight, ChevronDown, Plus, Minus, Zap,
   ZoomIn, ZoomOut, Copy, Sparkles, Wand2, X, Check, ArrowRight,
-  LocateFixed, GripVertical, Scissors, Trash2, MousePointer, Move, Cpu, Compass, Radio
+  LocateFixed, GripVertical, Scissors, Trash2, MousePointer, Move, Cpu, Compass, Radio, Sliders
 } from 'lucide-react';
 import { Track, Tala, Raga, AudioClip, AudioTake, ArrangementSection } from '../types/daw';
 import { audioEngine } from '../lib/webAudioEngine';
-import { INSTRUMENT_FAMILIES, getTrackInstrumentFamily } from '../constants/instruments';
+import { TimeEngine } from '../lib/timeEngine';
+import { INSTRUMENT_FAMILIES, getTrackInstrumentFamily, ALL_INDIAN_INSTRUMENT_CATEGORIES } from '../constants/instruments';
 
 interface TimelineProps {
   tracks: Track[];
@@ -36,6 +37,9 @@ interface TimelineProps {
   sections?: ArrangementSection[];
   onOpenArranger?: () => void;
   timeSignature?: string;
+  onOpenDirector?: () => void;
+  onQuickStartDirector?: () => void;
+  onOpenAIGenerationModal?: (trackId: string) => void;
 }
 
 export interface TrackSelection {
@@ -86,7 +90,10 @@ export const Timeline: React.FC<TimelineProps> = ({
   onOpenPlugins,
   sections = [],
   onOpenArranger,
-  timeSignature = '4/4'
+  timeSignature = '4/4',
+  onOpenDirector,
+  onQuickStartDirector,
+  onOpenAIGenerationModal
 }) => {
   const [collapsedGroups, setCollapsedGroups] = useState<{ [group: string]: boolean }>({});
   const [barWidth, setBarWidth] = useState<number>(64); // Zoom scale in pixels per bar (28px - 140px)
@@ -149,21 +156,23 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   // Track ID of open instrument family popover
   const [openInstrumentDropdownTrackId, setOpenInstrumentDropdownTrackId] = useState<string | null>(null);
+  const [instCategoryFilter, setInstCategoryFilter] = useState<string>('all');
 
   const toggleGroup = (group: string) => {
     setCollapsedGroups(prev => ({ ...prev, [group]: !prev[group] }));
   };
 
-  const tsParts = timeSignature.split('/');
-  const beatsPerBar = parseInt(tsParts[0]) || 4;
-  const beatUnit = parseInt(tsParts[1]) || 4;
+  const parsedSig = TimeEngine.parseTimeSignature(timeSignature);
+  const beatsPerBar = parsedSig.beatsPerBar;
+  const beatUnit = parsedSig.denominator;
+
+  // Viewport virtualization for ultra-lightweight memory occupancy
+  const visibleRuler = TimeEngine.getVisibleBarRange(scrollLeft, viewportWidth, barWidth, totalBars, 3);
+  const trackGridCss = TimeEngine.getTrackGridCss(barWidth, timeSignature);
 
   // Convert bar index to real-world minutes and seconds at current BPM
   const getBarTime = (barIdx: number, tempoBpm: number) => {
-    const totalSeconds = Math.floor(barIdx * (beatsPerBar * 60 / tempoBpm));
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    return TimeEngine.formatTimeString(barIdx, tempoBpm, timeSignature);
   };
 
   // Keep scrollLeft and viewportWidth updated on user scroll or resize
@@ -739,16 +748,37 @@ export const Timeline: React.FC<TimelineProps> = ({
     
     setIsGeneratingSelection(true);
 
-    // Audio preview click transient
-    audioEngine.playNotePreview(220, 0.3);
-
     setTimeout(() => {
+      // Generate authentic melodic Swaras tailored to the active Raga and track role
+      const swaraList = activeRaga.swaras.split(/\s+/).filter(Boolean);
+      const svaraToSemitone: Record<string, number> = {
+        'S': 0, 'r': 1, 'R': 2, 'g': 3, 'G': 4,
+        'm': 5, "M'": 6, 'P': 7, 'd': 8, 'D': 9, 'n': 10, 'N': 11
+      };
+      const isBassOrLow = track.role === 'ambient_pad' || track.name.toLowerCase().includes('bass');
+      const baseMidi = isBassOrLow ? 48 : 60;
+      const swaraNotes: { swara: string; pitchMidi: number; bar: number; duration: number }[] = [];
+
+      // Create melodic movement for each bar in the selection
+      for (let b = 0; b < selection.durationBars; b++) {
+        const swaraIdx = (b % swaraList.length);
+        const swara = swaraList[swaraIdx] || 'S';
+        const semi = svaraToSemitone[swara] ?? 0;
+        swaraNotes.push({
+          swara,
+          pitchMidi: baseMidi + semi,
+          bar: selection.startBar + b,
+          duration: 1
+        });
+      }
+
       const newClip: AudioClip = {
         id: `clip-gen-${Date.now()}`,
         name: clipTitle,
         startBar: selection.startBar,
         durationBars: selection.durationBars,
-        color: track.color
+        color: track.color,
+        swaraNotes
       };
 
       // Auto-extend timeline if generated clip goes beyond current totalBars
@@ -1344,7 +1374,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           >
           
           {/* Top-Left Pinned Track Info & Zoom Toolbar Spacer */}
-          <div className="w-80 shrink-0 sticky left-0 z-50 bg-[#0c1017] border-r border-white/[0.15] px-2.5 flex items-center justify-between font-mono text-[11px] text-slate-400 shadow-[4px_0_14px_rgba(0,0,0,0.65)]">
+          <div className="w-80 shrink-0 sticky left-0 z-50 bg-[#0c1017] border-r border-white/[0.15] px-2.5 flex items-center justify-between font-mono text-[11px] text-slate-400">
             <div className="flex items-center gap-1.5">
               <span className="font-semibold text-slate-300">Tracks ({tracks.length})</span>
               
@@ -1374,11 +1404,23 @@ export const Timeline: React.FC<TimelineProps> = ({
 
               <button 
                 onClick={onOpenAddTrack}
-                className="flex items-center gap-0.5 text-amber-400 hover:text-amber-300 transition cursor-pointer font-sans ml-1"
+                className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#0284c7] hover:bg-[#0369a1] text-white font-medium text-xs shadow-sm transition cursor-pointer font-sans ml-1"
+                title="Add New Track (Cmd+T or Cmd+Ctrl+T for AI Track)"
               >
-                <Plus className="w-3 h-3" />
-                <span>Add</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Add Track</span>
               </button>
+
+              {onOpenDirector && (
+                <button
+                  onClick={onOpenDirector}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 font-medium text-[9.5px] transition cursor-pointer active:scale-95 ml-1"
+                  title="Open Director Scene Scoring & Rasa Modeler"
+                >
+                  <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                  <span>Director</span>
+                </button>
+              )}
             </div>
 
             {/* Follow Playhead Toggle & Zoom Controls */}
@@ -1442,34 +1484,66 @@ export const Timeline: React.FC<TimelineProps> = ({
               <button
                 onClick={(e) => { e.stopPropagation(); scrollToPlayhead(); }}
                 title="Playhead is behind track headers. Click to view playhead."
-                className="sticky left-[328px] z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-[10px] font-bold shadow-lg shadow-black/80 border border-amber-300 cursor-pointer transition animate-in fade-in slide-in-from-left-2 duration-150 my-auto ml-2 shrink-0"
+                className="absolute left-2 top-1/2 -translate-y-1/2 z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-[10px] font-bold shadow-lg shadow-black/80 border border-amber-300 cursor-pointer transition animate-in fade-in slide-in-from-left-2 duration-150"
               >
                 <span className="text-xs font-black">◀</span>
                 <span>Playhead: Bar {Math.floor(playheadPosition)}.{Math.floor((playheadPosition % 1) * beatsPerBar) + 1}</span>
               </button>
             )}
 
-            {Array.from({ length: totalBars }).map((_, barIdx) => {
-              const isSam = (barIdx % beatsPerBar) === 0;
+            {Array.from({ length: visibleRuler.count }).map((_, idx) => {
+              const barNum = visibleRuler.startBar + idx;
+              const barIdx = barNum - 1;
+              const metrics = TimeEngine.getBarMetrics(barNum, barWidth, timeSignature, bpm, activeTala);
+              const isSam = metrics.isTalaSam;
               const showTime = barWidth >= 48 ? isSam : (barIdx % 8) === 0;
               return (
                 <div 
-                  key={barIdx} 
-                  style={{ width: `${barWidth}px` }}
-                  className={`h-full shrink-0 flex flex-col justify-center ${barIdx === 0 ? 'pl-2.5 pr-1' : 'px-1'} font-mono text-[10px] border-r ${
+                  key={barNum} 
+                  style={{ 
+                    position: 'absolute',
+                    left: `${barIdx * barWidth}px`,
+                    width: `${barWidth}px` 
+                  }}
+                  className={`h-full flex flex-col justify-center px-1 font-mono text-[10px] border-r ${
                     isSam 
-                      ? 'border-white/[0.15] text-amber-200/90 font-medium bg-amber-500/[0.02]' 
+                      ? 'border-white/[0.18] text-amber-200/90 font-medium bg-amber-500/[0.04]' 
                       : 'border-white/[0.05] text-slate-500'
                   }`}
                 >
                   <div className="flex items-center justify-between leading-none">
-                    <span>{barIdx + 1}</span>
+                    <div className="flex items-center gap-1">
+                      <span>{barNum}</span>
+                      {isSam && (
+                        <span className="text-[7.5px] px-1 py-0.2 rounded bg-amber-500/25 text-amber-300 font-bold border border-amber-500/30 leading-none">
+                          Sam
+                        </span>
+                      )}
+                    </div>
                     {showTime && (
                       <span className="text-[9px] text-slate-500 font-normal">
-                        {getBarTime(barIdx, bpm)}
+                        {TimeEngine.formatTimeString(barIdx, bpm, timeSignature)}
                       </span>
                     )}
                   </div>
+                  {/* Metric Subdivisions / Beat Ticks (Scientific Bar Distribution) */}
+                  {barWidth >= 56 && (
+                    <div className="relative w-full h-1 mt-0.5 pointer-events-none">
+                      {metrics.beats.map((b) => (
+                        <div
+                          key={b.beatIndex}
+                          style={{ left: `${b.pixelOffset}px` }}
+                          className={`absolute top-0 w-[1px] ${
+                            b.isPrimary 
+                              ? 'h-1.5 bg-amber-400/80' 
+                              : b.isSecondary 
+                                ? 'h-1 bg-white/40' 
+                                : 'h-0.5 bg-white/20'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1581,7 +1655,44 @@ export const Timeline: React.FC<TimelineProps> = ({
           style={{ width: `${totalTimelineWidth}px` }}
         >
           
-          {tracks.map((track) => {
+          {tracks.length === 0 ? (
+            <div className="w-full py-28 flex flex-col items-center justify-center text-center px-4 select-none">
+              {/* Audio Waveform Graphic (Image 1) */}
+              <div className="w-12 h-12 flex items-center justify-center text-slate-600 mb-4">
+                <svg className="w-10 h-10 text-slate-600 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M12 2v20M8 6v12M16 4v16M4 10v4M20 9v6" strokeLinecap="round" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-slate-200 mb-1 tracking-tight">
+                Start creating
+              </h3>
+              <p className="text-xs text-slate-400 mb-1">
+                Drag audio files here or press <kbd className="px-1.5 py-0.5 rounded bg-white/[0.08] border border-white/[0.1] text-slate-300 font-mono text-[10px]">Cmd+T</kbd> to add a track
+              </p>
+              <p className="text-xs text-slate-500 mb-6">
+                Use <span className="text-slate-300 font-medium">Insert</span> to import media or <kbd className="px-1.5 py-0.5 rounded bg-white/[0.08] border border-white/[0.1] text-slate-300 font-mono text-[10px]">Ctrl+O</kbd> to open a project
+              </p>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={onOpenAddTrack}
+                  className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] text-white font-semibold text-xs shadow-lg shadow-blue-900/30 transition-all cursor-pointer active:scale-95"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>New AI Track (Cmd+Ctrl+T)</span>
+                </button>
+                {onOpenDirector && (
+                  <button
+                    onClick={onOpenDirector}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-semibold text-xs transition-all cursor-pointer active:scale-95"
+                  >
+                    <span>Director Scene Scoring</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            tracks.map((track) => {
             const isSelected = selectedTrackId === track.id;
             const isTrackSelectionActive = selection && selection.trackId === track.id;
 
@@ -1595,83 +1706,152 @@ export const Timeline: React.FC<TimelineProps> = ({
                 style={{ width: `${totalTimelineWidth}px` }}
               >
                 {/* Track Control Header (Sticky Left on Horizontal Scroll) */}
-                <div className={`w-80 shrink-0 sticky left-0 p-2 flex flex-col justify-between bg-[#0c1017] border-r border-white/[0.12] shadow-[4px_0_14px_rgba(0,0,0,0.65)] ${openInstrumentDropdownTrackId === track.id ? 'z-[60]' : 'z-50'}`}>
+                <div className={`w-80 shrink-0 sticky left-0 p-2 flex flex-col justify-between bg-[#0c1017] border-r border-white/[0.12] ${
+                  track.isAITrack || track.name.toLowerCase().startsWith('ai') ? 'border-l-4 border-amber-400' : ''
+                } ${openInstrumentDropdownTrackId === track.id ? 'z-[60]' : 'z-50'}`}>
                   <div className="flex flex-col gap-0.5 relative">
-                    {/* Row 1: Track Name + Instrument Selector */}
+                    {/* Row 1: Track Name + Instrument / AI Selector */}
                     <div className="flex items-center gap-1.5 min-w-0">
                       <div 
                         className="w-2 h-2 rounded-full shrink-0 shadow-sm opacity-90"
                         style={{ backgroundColor: track.color }}
                       />
-                      <span className="font-semibold text-slate-300 truncate text-xs max-w-[110px]">
+                      {(track.isAITrack || track.name.toLowerCase().startsWith('ai')) && (
+                        <span className="px-1 py-0.5 rounded text-[8.5px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-0.5 shrink-0">
+                          <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                          <span>AI</span>
+                        </span>
+                      )}
+                      <span className="font-semibold text-slate-200 truncate text-xs max-w-[105px]">
                         {track.name}
                       </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenAIGenerationModal?.(track.id);
+                        }}
+                        title="Open AI Generation Parameters & Prompt (ACE-Step)"
+                        className="w-5 h-5 rounded bg-blue-600/80 hover:bg-blue-500 text-white flex items-center justify-center shrink-0 cursor-pointer shadow transition ml-auto"
+                      >
+                        <Sliders className="w-2.5 h-2.5" />
+                      </button>
 
-                            {/* Interactive Instrument Family Dropdown Selector */}
+                            {/* Interactive Indian Classical Instrument Dropdown Selector */}
                             {(() => {
                               const family = getTrackInstrumentFamily(track);
                               const isDropdownOpen = openInstrumentDropdownTrackId === track.id;
-                              const currentInst = family.instruments.find(i => i.name === track.activeInstrument) || family.instruments[0];
+                              const allInsts = ALL_INDIAN_INSTRUMENT_CATEGORIES.flatMap(c => c.instruments);
+                              const currentInst = allInsts.find(i => i.name === track.activeInstrument) || family.instruments.find(i => i.name === track.activeInstrument) || family.instruments[0];
+
+                              const displayedCategories = instCategoryFilter === 'all'
+                                ? ALL_INDIAN_INSTRUMENT_CATEGORIES
+                                : ALL_INDIAN_INSTRUMENT_CATEGORIES.filter(c => c.id === instCategoryFilter);
 
                               return (
-                                <div className="relative inline-block shrink-0">
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <div className="relative inline-block shrink-0">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenInstrumentDropdownTrackId(isDropdownOpen ? null : track.id);
+                                      }}
+                                      title={`Active: ${track.activeInstrument || currentInst.name}. Click to change Indian Classical instrument.`}
+                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono transition bg-slate-900/90 hover:bg-slate-800 text-amber-200/90 border border-white/[0.12] hover:border-amber-400/40 cursor-pointer"
+                                    >
+                                      <span>{currentInst.icon}</span>
+                                      <span className="truncate max-w-[70px]">{currentInst.shortName}</span>
+                                      <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+                                    </button>
+
+                                    {/* Multi-Category Indian Instrument Popover */}
+                                    {isDropdownOpen && (
+                                      <div 
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="absolute left-0 top-6 w-72 max-h-80 overflow-y-auto bg-[#0f131c] border border-amber-500/35 rounded-xl shadow-2xl p-2 z-[70] divide-y divide-white/[0.08] animate-in fade-in zoom-in-95 duration-100"
+                                      >
+                                        {/* Category Filter Pills */}
+                                        <div className="pb-1.5 mb-1 flex items-center gap-1 overflow-x-auto no-scrollbar">
+                                          <button
+                                            onClick={() => setInstCategoryFilter('all')}
+                                            className={`px-1.5 py-0.5 rounded text-[8.5px] font-mono transition cursor-pointer whitespace-nowrap ${
+                                              instCategoryFilter === 'all' ? 'bg-amber-500/25 text-amber-300 font-semibold border border-amber-500/40' : 'text-slate-400 hover:text-slate-200'
+                                            }`}
+                                          >
+                                            All
+                                          </button>
+                                          {ALL_INDIAN_INSTRUMENT_CATEGORIES.map(cat => (
+                                            <button
+                                              key={cat.id}
+                                              onClick={() => setInstCategoryFilter(cat.id)}
+                                              className={`px-1.5 py-0.5 rounded text-[8.5px] font-mono transition cursor-pointer whitespace-nowrap flex items-center gap-0.5 ${
+                                                instCategoryFilter === cat.id ? 'bg-amber-500/25 text-amber-300 font-semibold border border-amber-500/40' : 'text-slate-400 hover:text-slate-200'
+                                              }`}
+                                            >
+                                              <span>{cat.icon}</span>
+                                              <span>{cat.label.split(' ')[0]}</span>
+                                            </button>
+                                          ))}
+                                        </div>
+
+                                        {/* Grouped Instruments List */}
+                                        <div className="pt-1.5 flex flex-col gap-2">
+                                          {displayedCategories.map(cat => (
+                                            <div key={cat.id}>
+                                              <div className="px-1 py-0.5 text-[8.5px] font-mono text-amber-400/80 font-semibold flex items-center justify-between">
+                                                <span>{cat.icon} {cat.label}</span>
+                                                <span className="text-[7.5px] text-slate-500 truncate max-w-[130px]">{cat.category}</span>
+                                              </div>
+                                              <div className="flex flex-col gap-0.5 mt-0.5">
+                                                {cat.instruments.map(inst => {
+                                                  const isSelected = track.activeInstrument === inst.name;
+                                                  return (
+                                                    <button
+                                                      key={inst.id}
+                                                      onClick={() => {
+                                                        onUpdateTrack(track.id, {
+                                                          activeInstrument: inst.name,
+                                                          name: `${track.name.split('.')[0] || '1'}. ${inst.shortName}`
+                                                        });
+                                                        audioEngine.playNotePreview(inst.previewPitch, 0.4);
+                                                        setOpenInstrumentDropdownTrackId(null);
+                                                      }}
+                                                      className={`w-full text-left px-2 py-1.5 rounded-lg flex items-start gap-2 hover:bg-white/[0.08] transition cursor-pointer ${
+                                                        isSelected ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/30' : 'text-slate-300'
+                                                      }`}
+                                                    >
+                                                      <span className="text-sm mt-0.5 shrink-0">{inst.icon}</span>
+                                                      <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center justify-between">
+                                                          <span className="font-semibold text-[10px] truncate">{inst.name}</span>
+                                                          {isSelected && <Check className="w-3 h-3 text-amber-400 shrink-0" />}
+                                                        </div>
+                                                        <p className="text-[8px] text-slate-400 line-clamp-1 leading-tight mt-0.5">
+                                                          {inst.desc}
+                                                        </p>
+                                                      </div>
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Stem Conditioning / Quick Regenerate Button */}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setOpenInstrumentDropdownTrackId(isDropdownOpen ? null : track.id);
+                                      onRegenerateTrack(track.id);
                                     }}
-                                    title={`Select instrument from ${family.familyTitle} (${family.indianClassicalCategory})`}
-                                    className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono transition bg-slate-900/90 hover:bg-slate-800 text-amber-200/90 border border-white/[0.12] hover:border-amber-400/40 cursor-pointer"
+                                    title={`Condition AI on ${track.activeInstrument || currentInst.name} & synthesize stem`}
+                                    className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8.5px] font-medium bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 transition cursor-pointer active:scale-95 shrink-0"
                                   >
-                                    <span>{currentInst.icon}</span>
-                                    <span className="truncate max-w-[70px]">{currentInst.shortName}</span>
-                                    <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+                                    <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                                    <span>Regen</span>
                                   </button>
-
-                                  {/* Instrument Family Dropdown Popover */}
-                                  {isDropdownOpen && (
-                                    <div 
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="absolute left-0 top-6 w-64 max-h-72 overflow-y-auto bg-[#0f131c] border border-white/[0.20] rounded-lg shadow-2xl p-1 z-50 divide-y divide-white/[0.06] animate-in fade-in zoom-in-95 duration-100"
-                                    >
-                                      <div className="px-2 py-1 text-[9px] font-mono text-amber-400/90 flex items-center justify-between">
-                                        <span>{family.familyTitle}</span>
-                                        <span className="text-slate-500 text-[8px]">{family.indianClassicalCategory}</span>
-                                      </div>
-                                      <div className="py-0.5">
-                                        {family.instruments.map((inst) => {
-                                          const isSelected = track.activeInstrument === inst.name || (!track.activeInstrument && inst.id === family.instruments[0].id);
-
-                                          return (
-                                            <button
-                                              key={inst.id}
-                                              onClick={() => {
-                                                onUpdateTrack(track.id, {
-                                                  activeInstrument: inst.name
-                                                });
-                                                audioEngine.playNotePreview(inst.previewPitch, 0.4);
-                                                setOpenInstrumentDropdownTrackId(null);
-                                              }}
-                                              className={`w-full text-left px-2 py-1.5 rounded flex items-start gap-2 hover:bg-white/[0.08] transition cursor-pointer ${
-                                                isSelected ? 'bg-amber-500/20 text-amber-200' : 'text-slate-300'
-                                              }`}
-                                            >
-                                              <span className="text-sm mt-0.5">{inst.icon}</span>
-                                              <div className="flex-1 min-w-0">
-                                                <div className="flex items-center justify-between">
-                                                  <span className="font-semibold text-[10px] truncate">{inst.name}</span>
-                                                  {isSelected && <Check className="w-3 h-3 text-amber-400 shrink-0" />}
-                                                </div>
-                                                <p className="text-[8.5px] text-slate-400 line-clamp-2 leading-tight mt-0.5">
-                                                  {inst.desc}
-                                                </p>
-                                              </div>
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  )}
                                 </div>
                               );
                             })()}
@@ -1877,28 +2057,40 @@ export const Timeline: React.FC<TimelineProps> = ({
                             )}
                           </div>
                         </div>
+
+                        {/* OpenStudio-Style Model Name Bar (Image 4) */}
+                        <div className="flex items-center justify-between pt-1 border-t border-white/[0.08] mt-1 w-full min-w-0">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenAIGenerationModal?.(track.id);
+                            }}
+                            title="Click to open AI Generation parameters & prompt interface (ACE-STEP)"
+                            className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/60 hover:bg-black/90 border border-white/[0.14] hover:border-amber-400/50 text-slate-200 text-[9px] font-mono tracking-wider uppercase cursor-pointer transition truncate flex-1 mr-2 shadow-sm"
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                            <span className="truncate font-semibold text-amber-200/90">
+                              {track.aiModelName ? `${track.aiModelName.split(' ')[0]} / ${track.aiWorkflow || 'TEXT TO MUSIC'}` : 'ACE-STEP / TEXT TO MUSIC'}
+                            </span>
+                          </button>
+                          <span className={`text-[9px] font-mono shrink-0 font-medium ${
+                            track.aiStatusState === 'generating' ? 'text-amber-400 animate-pulse' : 'text-slate-400'
+                          }`}>
+                            {track.aiStatusState === 'generating' ? 'Generating...' : 'Ready'}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Track Waveform / Clips Canvas (Right - Click & Drag Selection for Music/SFX Generation) */}
                       <div 
                         className="relative h-full shrink-0 bg-slate-950/30 flex select-none"
-                        style={{ width: `${totalBars * barWidth}px` }}
+                        style={{ 
+                          width: `${totalBars * barWidth}px`,
+                          ...trackGridCss
+                        }}
                         onMouseDown={(e) => handleCanvasMouseDown(e, track.id)}
                         onMouseMove={(e) => handleCanvasMouseMove(e, track.id)}
                       >
-                        {/* Bar Grid Lines */}
-                        {Array.from({ length: totalBars }).map((_, bIdx) => {
-                          const isSam = (bIdx % 4) === 0;
-                          return (
-                            <div 
-                              key={bIdx}
-                              style={{ width: `${barWidth}px` }}
-                              className={`h-full shrink-0 border-r pointer-events-none ${
-                                isSam ? 'border-white/[0.08]' : 'border-white/[0.03]'
-                              }`}
-                            />
-                          );
-                        })}
 
                         {/* Clips Rendered Across Any Length */}
                         {track.clips.map((clip) => {
@@ -2343,7 +2535,8 @@ export const Timeline: React.FC<TimelineProps> = ({
 
                     </div>
                   );
-                })}
+                })
+              )}
         </div>
 
       </div>

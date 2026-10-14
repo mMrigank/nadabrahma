@@ -26,6 +26,16 @@ const ROLES_CATALOG: {
   defaultColor: string;
 }[] = [
   {
+    role: 'lead_melody',
+    title: 'AI Generative Track (ACE-Step)',
+    icon: '✨',
+    desc: 'Full-spectrum generative track conditioned on Raga, lyrics, and Apple Metal latent diffusion.',
+    recommendedModel: 'ace_step',
+    modelReason: 'ACE-Step 1.5 XL Turbo: Latent diffusion text-to-audio engine.',
+    defaultGroup: 'Vocals',
+    defaultColor: '#eab308' // OpenStudio Amber Yellow
+  },
+  {
     role: 'solo_instrument',
     title: 'Mood Instrument (Lock the Mood)',
     icon: '🪕',
