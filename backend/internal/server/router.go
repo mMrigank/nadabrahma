@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,7 +22,12 @@ import (
 
 // Handler holds all server dependencies.
 type Handler struct {
-	manager *models.Manager
+	manager         *models.Manager
+	progressMu      sync.RWMutex
+	currentProgress float64
+	currentModel    string
+	isGenerating    bool
+	generationStart time.Time
 }
 
 // NewHandler creates a new Handler.
@@ -41,6 +47,7 @@ func NewRouter(h *Handler) http.Handler {
 	// REST API
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/generate", h.handleGenerate)
+		r.Get("/generate/progress", h.handleGetProgress)
 		r.Get("/models", h.handleListModels)
 		r.Get("/memory", h.handleMemory)
 		r.Get("/renders", h.handleListRenders)
@@ -110,12 +117,27 @@ func (h *Handler) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		SampleRate:  48000,
 	}
 
+	h.progressMu.Lock()
+	h.currentProgress = 0.05
+	h.currentModel = req.ModelID
+	h.isGenerating = true
+	h.generationStart = time.Now()
+	h.progressMu.Unlock()
+
+	defer func() {
+		h.progressMu.Lock()
+		h.isGenerating = false
+		h.currentProgress = 1.0
+		h.progressMu.Unlock()
+	}()
+
 	// Run generation synchronously (for REST endpoint).
-	// For streaming progress, use the WebSocket endpoint instead.
-	progressCh := make(chan float64, 10)
+	progressCh := make(chan float64, 50)
 	go func() {
-		// Drain progress channel (not relayed over REST, use WS for that).
-		for range progressCh {
+		for p := range progressCh {
+			h.progressMu.Lock()
+			h.currentProgress = p
+			h.progressMu.Unlock()
 		}
 	}()
 
@@ -132,6 +154,21 @@ func (h *Handler) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Model-ID", string(result.ModelID))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.AudioWAV)
+}
+
+func (h *Handler) handleGetProgress(w http.ResponseWriter, r *http.Request) {
+	h.progressMu.RLock()
+	defer h.progressMu.RUnlock()
+	elapsed := 0.0
+	if h.isGenerating {
+		elapsed = time.Since(h.generationStart).Seconds()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"isGenerating": h.isGenerating,
+		"model":        h.currentModel,
+		"progress":     h.currentProgress,
+		"elapsedSec":   elapsed,
+	})
 }
 
 func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {

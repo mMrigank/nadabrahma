@@ -101,7 +101,6 @@ export const AIModelOrchestratorModal: React.FC<AIModelOrchestratorModalProps> =
   const handleSynthesizeTake = async () => {
     setIsSynthesizing(true);
     setGenerationProgress(0);
-    audioEngine.playNotePreview(baseSaHz * 2, 0.4);
 
     if (backendConnected) {
       setSynthesisLog(`Dispatching to audio.cpp broker [Model: ${AI_MODELS_METADATA[selectedTrack.model].name}]...`);

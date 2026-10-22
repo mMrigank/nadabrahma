@@ -79,7 +79,17 @@ func runAudioCpp(ctx context.Context, args []string, progressCh chan<- float64) 
 		resolvedArgs = append(resolvedArgs, "--out", outPath)
 	}
 
+	hasThreads := false
+	for _, a := range resolvedArgs {
+		if a == "--threads" {
+			hasThreads = true
+			break
+		}
+	}
 	fullArgs := []string{"--model-spec-override", specDir}
+	if !hasThreads {
+		fullArgs = append(fullArgs, "--threads", "4")
+	}
 	fullArgs = append(fullArgs, resolvedArgs...)
 
 	cmd := exec.CommandContext(ctx, binary, fullArgs...)

@@ -1,0 +1,4686 @@
+#!/usr/bin/env python3
+"""
+OpenStudio AI Tools installer.
+
+Release builds prepare the AI runtime outside this script by downloading a
+versioned OpenStudio-managed runtime archive, verifying it, and extracting it
+into the user's OpenStudio data directory. This helper then verifies the
+prepared runtime and downloads the required model.
+
+Dev or intentionally unbundled builds may still bootstrap a fresh runtime from
+an external Python interpreter.
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+from collections import deque
+import ctypes
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+import platform
+import re
+import socket
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from pathlib import Path
+from typing import Any
+
+from ai_runtime_probe import (
+    DEFAULT_MUSIC_GEN_MODEL,
+    DEFAULT_MUSIC_GEN_MODEL_REPO,
+    DEFAULT_MUSIC_GEN_SHARED_REPO,
+    REQUIRED_MUSIC_GEN_NATIVE_FILES,
+    find_local_ace_native_assets,
+    get_windows_cuda_pytorch_index_url,
+    get_windows_cuda_pytorch_packages,
+    get_windows_flash_attn_asset,
+    get_windows_triton_package_spec,
+    get_music_generation_required_paths,
+    get_music_runtime_profiles,
+    is_nonempty_model_file,
+    probe_runtime_capabilities,
+    resolve_music_gen_checkpoint_root,
+)
+
+DEFAULT_MODEL_NAME = "BS-Roformer-SW.ckpt"
+FEATURE_STEM_SEPARATION = "stemSeparation"
+FEATURE_AUDIO_GENERATION = "audioGeneration"
+DEFAULT_INSTALL_FEATURES = (FEATURE_STEM_SEPARATION,)
+ALL_INSTALL_FEATURES = (FEATURE_STEM_SEPARATION, FEATURE_AUDIO_GENERATION)
+FEATURE_LABELS = {
+    FEATURE_STEM_SEPARATION: "Stem Separation",
+    FEATURE_AUDIO_GENERATION: "Audio Generation",
+}
+MIN_STEM_SYSTEM_RAM_MB = 8 * 1024
+MIN_AUDIO_SYSTEM_RAM_MB = 16 * 1024
+MIN_AUDIO_GPU_MEMORY_MB = 8 * 1024
+FALLBACK_MIN_PYTHON = (3, 10)
+FALLBACK_MAX_PYTHON_EXCLUSIVE = (3, 13)
+MUSIC_GEN_REQUIRED_PYTHON = (3, 11)
+MUSIC_GEN_SPACE_REPO = DEFAULT_MUSIC_GEN_MODEL_REPO
+MUSIC_GEN_SPACE_REPO_TYPE = "model"
+MUSIC_GEN_SOURCE_DIRNAME = "ace-step-diffusers-source"
+MUSIC_GEN_HUB_CACHE_DIRNAME = ".hub-cache"
+MODEL_DOWNLOAD_MANIFEST_URL = "https://raw.githubusercontent.com/TRvlvr/application_data/main/filelists/download_checks.json"
+UVR_MODEL_REPO_URL_PREFIX = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models"
+UVR_MODEL_CONFIG_URL_PREFIX = f"{UVR_MODEL_REPO_URL_PREFIX}/mdx_model_data/mdx_c_configs"
+AUDIO_SEPARATOR_MODEL_REPO_URL_PREFIX = "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs"
+AUDIO_SEPARATOR_HF_REPO_URL_PREFIX = "https://huggingface.co/lainlives/audio-separator-models/resolve/main"
+DOWNLOAD_CHUNK_SIZE = 1024 * 512
+DOWNLOAD_TIMEOUT_SECONDS = 60
+DOWNLOAD_HEARTBEAT_SECONDS = 5.0
+MODEL_DOWNLOAD_PROGRESS_START = 0.82
+MODEL_DOWNLOAD_PROGRESS_END = 0.95
+ACE15_LEGACY_TEXT_ENCODER_FILENAMES: dict[str, str] = {}
+ACE15_MANAGED_LM_CONFIG_OVERRIDES: dict[str, dict[str, Any]] = {}
+ACE15_MANAGED_LM_SHARED_FILES: tuple[str, ...] = ()
+WINDOWS_REUSED_RUNTIME_REPAIR_PACKAGES = (
+    "audio-separator==0.41.1",
+    "requests>=2",
+    "certifi>=2023.5.7",
+    "charset_normalizer<4,>=2",
+    "idna<4,>=2.5",
+    "urllib3<3,>=1.26",
+)
+
+LOG_PATH: Path | None = None
+SESSION_ID = ""
+RUNTIME_CANDIDATE = ""
+FALLBACK_ATTEMPTED = False
+START_TIME_MONOTONIC = time.monotonic()
+PENDING_RUNTIME_CANDIDATE: Path | None = None
+
+
+def cleanup_pending_runtime_candidate() -> None:
+    global PENDING_RUNTIME_CANDIDATE
+    candidate = PENDING_RUNTIME_CANDIDATE
+    PENDING_RUNTIME_CANDIDATE = None
+    if candidate is not None and candidate.exists():
+        try:
+            shutil.rmtree(candidate, onerror=_handle_remove_readonly)
+        except OSError as exc:
+            write_log(f"Could not remove unused runtime candidate {candidate}: {exc}")
+
+
+atexit.register(cleanup_pending_runtime_candidate)
+
+
+class InstallerStepError(Exception):
+    def __init__(self, message: str, *, error_code: str, progress: float) -> None:
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+        self.progress = progress
+
+
+class ModelDownloadError(Exception):
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+
+
+def normalize_feature_id(value: str) -> str:
+    normalized = str(value or "").strip()
+    aliases = {
+        "stem": FEATURE_STEM_SEPARATION,
+        "stems": FEATURE_STEM_SEPARATION,
+        "stem-separation": FEATURE_STEM_SEPARATION,
+        "stem_separation": FEATURE_STEM_SEPARATION,
+        "stemSeparation": FEATURE_STEM_SEPARATION,
+        "audio": FEATURE_AUDIO_GENERATION,
+        "audio-generation": FEATURE_AUDIO_GENERATION,
+        "audio_generation": FEATURE_AUDIO_GENERATION,
+        "audioGeneration": FEATURE_AUDIO_GENERATION,
+        "music": FEATURE_AUDIO_GENERATION,
+        "music-generation": FEATURE_AUDIO_GENERATION,
+        "musicGeneration": FEATURE_AUDIO_GENERATION,
+    }
+    return aliases.get(normalized, "")
+
+
+def normalize_feature_selection(value: Any, *, default: tuple[str, ...] = DEFAULT_INSTALL_FEATURES) -> list[str]:
+    if value is None:
+        raw_items: list[Any] = []
+    elif isinstance(value, str):
+        raw_items = [item for item in re.split(r"[,;\s]+", value) if item.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+
+    features: list[str] = []
+    for item in raw_items:
+        feature_id = normalize_feature_id(str(item))
+        if feature_id and feature_id not in features:
+            features.append(feature_id)
+
+    if not features:
+        features = list(default)
+    return features
+
+
+def _get_system_memory_mb() -> int:
+    if platform.system() == "Windows":
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys // (1024 * 1024))
+        except Exception:
+            return 0
+
+    try:
+        if hasattr(os, "sysconf"):
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            page_count = int(os.sysconf("SC_PHYS_PAGES"))
+            return int((page_size * page_count) // (1024 * 1024))
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    return 0
+
+
+def _probe_nvidia_gpu() -> dict[str, Any] | None:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    best_name = ""
+    best_memory_mb = 0
+    for line in (result.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            memory_mb = int(float(parts[-1]))
+        except ValueError:
+            continue
+        if memory_mb > best_memory_mb:
+            best_name = ", ".join(parts[:-1]).strip()
+            best_memory_mb = memory_mb
+
+    if best_memory_mb <= 0:
+        return None
+
+    return {
+        "gpuBackend": "cuda",
+        "gpuName": best_name or "NVIDIA GPU",
+        "gpuMemoryMb": best_memory_mb,
+        "gpuMemoryDetected": True,
+    }
+
+
+def _rocm_gpu_pool_memory_mb(output: str) -> int:
+    gpu = global_pool = False
+    pool_kb = largest_kb = 0
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith("Agent "):
+            gpu = global_pool = False
+            pool_kb = 0
+        if line.startswith("Device Type:"):
+            gpu = line.split(":", 1)[1].strip() == "GPU"
+        if line.startswith("Segment:"):
+            global_pool = "GLOBAL;" in line
+            pool_kb = 0
+        if line.startswith("Size:") and line.endswith(" KB"):
+            match = re.match(r"Size:\s*(\d+)", line)
+            pool_kb = int(match[1]) if match else 0
+        if line.startswith("Allocatable:") and line.endswith("TRUE") and gpu and global_pool:
+            largest_kb = max(largest_kb, pool_kb)
+    return largest_kb // 1024
+
+
+def _probe_rocm_gpu() -> dict[str, Any] | None:
+    if platform.system() != "Linux":
+        return None
+    best_memory_mb = 0
+    for command in (["rocminfo"], ["rocm-smi", "--showmeminfo", "vram"]):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=5)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        if command[0] == "rocminfo":
+            best_memory_mb = _rocm_gpu_pool_memory_mb(result.stdout or "")
+        else:
+            for value in re.findall(r"VRAM Total Memory \(B\):\s*(\d+)", result.stdout or ""):
+                best_memory_mb = max(best_memory_mb, int(value) // (1024 * 1024))
+        if best_memory_mb > 0:
+            break
+    if best_memory_mb <= 0:
+        return None
+    return {
+        "gpuBackend": "rocm",
+        "gpuName": "AMD ROCm GPU",
+        "gpuMemoryMb": best_memory_mb,
+        "gpuMemoryDetected": True,
+    }
+
+
+def _probe_apple_silicon_gpu() -> dict[str, Any] | None:
+    if platform.system() != "Darwin":
+        return None
+    ram_mb = _get_system_memory_mb()
+    is_arm = platform.machine().lower() in ("arm64", "aarch64")
+    name = "Apple Silicon Metal (MPS)" if is_arm else "Apple Metal (MPS)"
+    return {
+        "gpuBackend": "mps",
+        "gpuName": name,
+        "gpuMemoryMb": ram_mb,
+        "gpuMemoryDetected": True,
+    }
+
+
+def probe_hardware_requirements() -> dict[str, Any]:
+    gpu = _probe_nvidia_gpu() or _probe_rocm_gpu() or _probe_apple_silicon_gpu() or {}
+    system_ram_mb = _get_system_memory_mb()
+    return {
+        "schemaVersion": 1,
+        "platform": platform.system().lower(),
+        "architecture": platform.machine(),
+        "systemRamMb": system_ram_mb,
+        "systemRamGb": round(system_ram_mb / 1024, 2) if system_ram_mb > 0 else 0,
+        "gpuBackend": gpu.get("gpuBackend", "none"),
+        "gpuName": gpu.get("gpuName", ""),
+        "gpuMemoryMb": int(gpu.get("gpuMemoryMb", 0) or 0),
+        "gpuMemoryGb": round(int(gpu.get("gpuMemoryMb", 0) or 0) / 1024, 2),
+        "gpuMemoryDetected": bool(gpu.get("gpuMemoryDetected", False)),
+        "audioGenerationGpuSupported": gpu.get("gpuBackend") in {"cuda", "rocm", "mps"},
+        "requirements": {
+            FEATURE_STEM_SEPARATION: {
+                "minSystemRamMb": MIN_STEM_SYSTEM_RAM_MB,
+            },
+            FEATURE_AUDIO_GENERATION: {
+                "minSystemRamMb": MIN_AUDIO_SYSTEM_RAM_MB,
+                "minGpuMemoryMb": MIN_AUDIO_GPU_MEMORY_MB,
+                "supportedGpuBackends": ["cuda", "rocm", "mps"],
+            },
+        },
+    }
+
+
+def evaluate_feature_compatibility(hardware: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    system_ram_mb = int(hardware.get("systemRamMb", 0) or 0)
+    gpu_memory_mb = int(hardware.get("gpuMemoryMb", 0) or 0)
+    gpu_backend = str(hardware.get("gpuBackend", "none") or "none")
+    gpu_supported = bool(hardware.get("audioGenerationGpuSupported", False))
+
+    stem_reason = ""
+    if system_ram_mb <= 0:
+        stem_reason = "system memory could not be detected"
+    elif system_ram_mb < MIN_STEM_SYSTEM_RAM_MB:
+        stem_reason = "at least 8 GB system RAM is required"
+
+    audio_reason = ""
+    if system_ram_mb <= 0:
+        audio_reason = "system memory could not be detected"
+    elif system_ram_mb < MIN_AUDIO_SYSTEM_RAM_MB:
+        audio_reason = "at least 16 GB system RAM is required"
+    elif not gpu_supported:
+        audio_reason = "supported GPU with at least 8 GB memory was not detected"
+    elif gpu_backend != "mps" and gpu_memory_mb < MIN_AUDIO_GPU_MEMORY_MB:
+        audio_reason = "supported GPU with at least 8 GB memory was not detected"
+    elif gpu_backend == "mps" and system_ram_mb < MIN_AUDIO_SYSTEM_RAM_MB:
+        audio_reason = "at least 16 GB unified memory is required on Apple Silicon"
+
+    return {
+        FEATURE_STEM_SEPARATION: {
+            "id": FEATURE_STEM_SEPARATION,
+            "label": FEATURE_LABELS[FEATURE_STEM_SEPARATION],
+            "compatible": stem_reason == "",
+            "blocked": stem_reason != "",
+            "blockReason": stem_reason,
+            "message": (
+                "Stem Separation is compatible with this machine."
+                if stem_reason == ""
+                else f"This machine does not meet Stem Separation requirements: {stem_reason}."
+            ),
+            "requiresGpu": False,
+            "minSystemRamMb": MIN_STEM_SYSTEM_RAM_MB,
+        },
+        FEATURE_AUDIO_GENERATION: {
+            "id": FEATURE_AUDIO_GENERATION,
+            "label": FEATURE_LABELS[FEATURE_AUDIO_GENERATION],
+            "compatible": audio_reason == "",
+            "blocked": audio_reason != "",
+            "blockReason": audio_reason,
+            "message": (
+                "Audio Generation is compatible with this machine."
+                if audio_reason == ""
+                else f"This machine does not meet Audio Generation requirements: {audio_reason}."
+            ),
+            "requiresGpu": True,
+            "minSystemRamMb": MIN_AUDIO_SYSTEM_RAM_MB,
+            "minGpuMemoryMb": MIN_AUDIO_GPU_MEMORY_MB,
+            "supportedGpuBackends": ["cuda", "rocm", "mps"],
+            "detectedGpuBackend": gpu_backend,
+        },
+    }
+
+
+def build_feature_payload(
+    selected_features: list[str],
+    hardware: dict[str, Any],
+    *,
+    installed_features: list[str] | None = None,
+) -> dict[str, Any]:
+    installed_features = installed_features or []
+    compatibility = evaluate_feature_compatibility(hardware)
+    payload: dict[str, Any] = {}
+    for feature_id in ALL_INSTALL_FEATURES:
+        feature = dict(compatibility[feature_id])
+        feature["selected"] = feature_id in selected_features
+        feature["installed"] = feature_id in installed_features
+        feature["ready"] = feature_id in installed_features
+        payload[feature_id] = feature
+    return payload
+
+
+def hardware_block_message(feature_ids: list[str], feature_payload: dict[str, Any]) -> str:
+    for feature_id in feature_ids:
+        feature = feature_payload.get(feature_id, {})
+        if feature.get("blocked"):
+            return str(feature.get("message", "This machine does not meet the hardware requirements for the selected AI feature."))
+    return "This machine does not meet the hardware requirements for the selected AI features."
+
+
+def filter_compatible_features(selected_features: list[str], hardware: dict[str, Any]) -> list[str]:
+    compatibility = evaluate_feature_compatibility(hardware)
+    return [
+        feature_id
+        for feature_id in selected_features
+        if compatibility.get(feature_id, {}).get("compatible") is True
+    ]
+
+
+def classify_backend_step_features(step: dict[str, Any]) -> tuple[str, ...]:
+    text = " ".join(
+        str(step.get(key, ""))
+        for key in ("description", "stepLabel", "errorCode", "type")
+    ).lower()
+    if any(marker in text for marker in ("ace-step", "music", "triton", "flash", "torch")):
+        return (FEATURE_AUDIO_GENERATION,)
+    return (FEATURE_STEM_SEPARATION,)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def write_log(message: str) -> None:
+    if LOG_PATH is None:
+        return
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("a", encoding="utf-8", errors="replace") as handle:
+        handle.write(message.rstrip() + "\n")
+
+
+def log_event(component: str, phase: str, event: str, **kwargs) -> None:
+    payload = {
+        "timestamp": utc_now_iso(),
+        "component": component,
+        "phase": phase,
+        "event": event,
+        "platform": platform.system().lower(),
+        "sessionId": SESSION_ID,
+        "runtimeCandidate": RUNTIME_CANDIDATE,
+        "fallbackAttempted": FALLBACK_ATTEMPTED,
+    }
+    payload.update(kwargs)
+    write_log(json.dumps(payload, ensure_ascii=True))
+
+
+def emit(state: str, progress: float, **kwargs) -> None:
+    payload = {"state": state, "progress": round(progress, 4)}
+    if SESSION_ID:
+        payload["sessionId"] = SESSION_ID
+    if RUNTIME_CANDIDATE:
+        payload["runtimeCandidate"] = RUNTIME_CANDIDATE
+    payload["fallbackAttempted"] = FALLBACK_ATTEMPTED
+    payload.update(kwargs)
+    payload.setdefault("lastPhase", state)
+    payload.setdefault("elapsedMs", int((time.monotonic() - START_TIME_MONOTONIC) * 1000))
+    if LOG_PATH is not None and "detailLogPath" not in payload:
+        payload["detailLogPath"] = str(LOG_PATH)
+    serialized = json.dumps(payload)
+    write_log(serialized)
+    # When OpenStudio launches this installer it tails the install log directly
+    # and does not drain the child process stdout pipe. Continuing to print every
+    # structured progress update would eventually block the installer once the
+    # pipe buffer fills, which is exactly what can happen during large model
+    # downloads. Keep stdout for standalone/debug runs that do not provide a
+    # log path, and allow forcing stdout explicitly for troubleshooting.
+    should_print_stdout = LOG_PATH is None or os.environ.get("OPENSTUDIO_INSTALLER_FORCE_STDOUT") == "1"
+    if should_print_stdout:
+        try:
+            print(serialized, flush=True)
+        except (BrokenPipeError, OSError):
+            pass
+
+
+def fail(
+    message: str,
+    *,
+    state: str = "error",
+    progress: float = 0.0,
+    error_code: str = "unknown_error",
+    **kwargs,
+) -> None:
+    emit(state, progress, error=message, errorCode=error_code, terminalReason=error_code, **kwargs)
+    sys.exit(1)
+
+
+def resolve_runtime_python(runtime_root: Path) -> Path:
+    candidates = [
+        runtime_root / "python.exe",
+        runtime_root / "python",
+        runtime_root / "python" / "python.exe",
+        runtime_root / "python" / "python",
+        runtime_root / "Scripts" / "python.exe",
+        runtime_root / "Scripts" / "python",
+        runtime_root / "python" / "bin" / "python3",
+        runtime_root / "python" / "bin" / "python",
+        runtime_root / "python3",
+        runtime_root / "bin" / "python3",
+        runtime_root / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    fail(
+        f"Could not find a Python executable inside {runtime_root}.",
+        error_code="runtime_validation_failed",
+        installSource="downloadedRuntime",
+        requiresExternalPython=False,
+        buildRuntimeMode="downloaded-runtime",
+    )
+    raise AssertionError("unreachable")
+
+
+def _detect_linux_gpu_backend() -> str:
+    """Detect available GPU backend on Linux. Returns 'cuda', 'rocm', or 'cpu'."""
+    # NVIDIA: nvidia-smi exits 0 when a GPU is present and the driver is loaded
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"], capture_output=True, timeout=5
+        )
+        if result.returncode == 0:
+            return "cuda"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # AMD ROCm: rocm-smi exits 0 when ROCm-compatible hardware is present
+    try:
+        result = subprocess.run(
+            ["rocm-smi"], capture_output=True, timeout=5
+        )
+        if result.returncode == 0:
+            return "rocm"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return "cpu"
+
+
+def read_python_version_info(python_executable: Path) -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            [
+                str(python_executable),
+                "-c",
+                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    version_text = result.stdout.strip()
+    parts = version_text.split(".")
+    if len(parts) != 3:
+        return None
+
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+def format_python_version(version: tuple[int, int, int] | None) -> str:
+    if version is None:
+        return "unknown"
+    return ".".join(str(part) for part in version)
+
+
+def is_music_generation_python_compatible(version: tuple[int, int, int] | None) -> bool:
+    return version is not None and (3, 11) <= version[:2] < (3, 13)
+
+
+def find_windows_python_311() -> Path | None:
+    if platform.system() != "Windows":
+        return None
+
+    py_launcher = shutil.which("py")
+    if not py_launcher:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                py_launcher,
+                "-3.11",
+                "-c",
+                "import sys; print(sys.executable)",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    candidate = Path(result.stdout.strip()).expanduser()
+    if candidate.exists():
+        return candidate.resolve()
+    return None
+
+
+def is_windows_nvidia_machine() -> bool:
+    if platform.system() != "Windows":
+        return False
+
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+        return False
+
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def terminate_windows_runtime_lock_holders(runtime_root: Path) -> list[str]:
+    if platform.system() != "Windows":
+        return []
+
+    resolved_runtime_root = safe_resolve(runtime_root)
+    runtime_python = safe_resolve(runtime_root / "Scripts" / "python.exe")
+    runtime_root_text = str(resolved_runtime_root).replace("\\", "\\\\").replace("'", "''")
+    runtime_python_text = str(runtime_python).replace("\\", "\\\\").replace("'", "''")
+    powershell_script = f"""
+$runtimeRoot = [System.IO.Path]::GetFullPath('{runtime_root_text}')
+$runtimePython = [System.IO.Path]::GetFullPath('{runtime_python_text}')
+Get-CimInstance Win32_Process | ForEach-Object {{
+    $exe = $_.ExecutablePath
+    $cmd = $_.CommandLine
+    $matchesRuntime = $false
+
+    if ($exe) {{
+        try {{
+            $resolvedExe = [System.IO.Path]::GetFullPath($exe)
+            if ($resolvedExe -ieq $runtimePython -or $resolvedExe.StartsWith($runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {{
+                $matchesRuntime = $true
+            }}
+        }} catch {{
+        }}
+    }}
+
+    if (-not $matchesRuntime -and $cmd) {{
+        if (
+            $cmd.IndexOf('generate_music.py --worker', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            -or $cmd.IndexOf($runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        ) {{
+            $matchesRuntime = $true
+        }}
+    }}
+
+    if ($matchesRuntime) {{
+        [PSCustomObject]@{{
+            ProcessId = $_.ProcessId
+            Name = $_.Name
+        }}
+    }}
+}} | ConvertTo-Json -Compress
+"""
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", powershell_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return []
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+
+    if isinstance(parsed, dict):
+        process_rows = [parsed]
+    elif isinstance(parsed, list):
+        process_rows = [row for row in parsed if isinstance(row, dict)]
+    else:
+        return []
+
+    killed: list[str] = []
+    for row in process_rows:
+        pid = row.get("ProcessId")
+        name = str(row.get("Name", "")).strip() or "process"
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            continue
+
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid_int), "/F", "/T"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            )
+            killed.append(f"{pid_int}:{name}")
+        except (OSError, subprocess.SubprocessError):
+            continue
+
+    return killed
+
+
+def _handle_remove_readonly(func: Any, path: str, exc_info: Any) -> None:
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    func(path)
+
+
+def remove_tree_with_retries(target: Path, *, retries: int = 3, retry_delay_seconds: float = 1.0) -> list[str]:
+    terminated_processes: list[str] = []
+    if not target.exists():
+        return terminated_processes
+
+    if platform.system() == "Windows":
+        terminated_processes.extend(terminate_windows_runtime_lock_holders(target))
+        if terminated_processes:
+            time.sleep(retry_delay_seconds)
+
+    last_error: OSError | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.rmtree(target, onerror=_handle_remove_readonly)
+            return terminated_processes
+        except OSError as exc:
+            last_error = exc
+            if platform.system() == "Windows":
+                terminated_processes.extend(terminate_windows_runtime_lock_holders(target))
+                if attempt < retries:
+                    time.sleep(retry_delay_seconds)
+                    continue
+            raise
+
+    if last_error is not None:
+        raise last_error
+    return terminated_processes
+
+
+def get_candidate_ace_text_encoder_dirs() -> list[Path]:
+    candidates: list[Path] = []
+
+    for env_name in (
+        "OPENSTUDIO_ACESTEP_TEXT_ENCODER_DIR",
+        "OPENSTUDIO_ACE_TEXT_ENCODER_DIR",
+    ):
+        raw = os.environ.get(env_name, "").strip()
+        if raw:
+            candidates.append(Path(raw).expanduser())
+
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            resolved = candidate.expanduser()
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(resolved)
+    return unique_candidates
+
+
+def find_local_ace_text_encoder_assets() -> tuple[dict[str, Path], list[str]]:
+    found: dict[str, Path] = {}
+    searched_dirs: list[str] = []
+
+    for candidate_dir in get_candidate_ace_text_encoder_dirs():
+        searched_dirs.append(str(candidate_dir))
+        if not candidate_dir.is_dir():
+            continue
+        for target_name, source_filename in ACE15_LEGACY_TEXT_ENCODER_FILENAMES.items():
+            if target_name in found:
+                continue
+            candidate = candidate_dir / source_filename
+            if candidate.exists() and candidate.is_file():
+                found[target_name] = candidate.resolve()
+
+    return found, searched_dirs
+
+
+def hardlink_or_copy_file(source: Path, destination: Path) -> str:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
+    try:
+        os.link(source, destination)
+        return "hardlink"
+    except OSError:
+        shutil.copy2(source, destination)
+        return "copy"
+
+
+def synthesize_managed_ace15_lm_checkpoint(
+    *,
+    checkpoint_root: Path,
+    target_name: str,
+    source_safetensors: Path,
+    template_checkpoint_dir: Path,
+) -> Path:
+    if target_name not in ACE15_MANAGED_LM_CONFIG_OVERRIDES:
+        raise ValueError(f"Unsupported ACE15 managed LM target: {target_name}")
+
+    target_dir = checkpoint_root / target_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    template_config_path = template_checkpoint_dir / "config.json"
+    if not template_config_path.exists():
+        raise FileNotFoundError(f"Template config is missing: {template_config_path}")
+
+    config = json.loads(template_config_path.read_text(encoding="utf-8"))
+    config.update(ACE15_MANAGED_LM_CONFIG_OVERRIDES[target_name])
+    if "num_hidden_layers" in config:
+        config["layer_types"] = ["full_attention"] * int(config["num_hidden_layers"])
+
+    for shared_name in ACE15_MANAGED_LM_SHARED_FILES:
+        source_file = template_checkpoint_dir / shared_name
+        if source_file.exists() and source_file.is_file():
+            shutil.copy2(source_file, target_dir / shared_name)
+
+    (target_dir / "config.json").write_text(
+        json.dumps(config, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+    link_mode = hardlink_or_copy_file(source_safetensors, target_dir / "model.safetensors")
+    metadata = {
+        "source": "localModelImport",
+        "sourceFile": str(source_safetensors),
+        "linkMode": link_mode,
+        "generatedAt": utc_now_iso(),
+        "targetName": target_name,
+    }
+    (target_dir / "openstudio-source.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    return target_dir
+
+
+def hydrate_legacy_runtime_profiles(checkpoint_root: Path) -> dict[str, Any]:
+    template_dir = checkpoint_root / "acestep-5Hz-lm-1.7B"
+    if not template_dir.is_dir():
+        return {
+            "importedTargets": [],
+            "searchedDirs": [],
+            "foundSources": {},
+            "missingTargets": list(ACE15_LEGACY_TEXT_ENCODER_FILENAMES.keys()),
+            "error": f"Template checkpoint is missing: {template_dir}",
+        }
+
+    found_sources, searched_dirs = find_local_ace_text_encoder_assets()
+    imported_targets: list[str] = []
+    missing_targets: list[str] = []
+
+    for target_name in ACE15_LEGACY_TEXT_ENCODER_FILENAMES:
+        target_dir = checkpoint_root / target_name
+        if (target_dir / "model.safetensors").exists():
+            continue
+
+        source_safetensors = found_sources.get(target_name)
+        if source_safetensors is None:
+            missing_targets.append(target_name)
+            continue
+
+        synthesize_managed_ace15_lm_checkpoint(
+            checkpoint_root=checkpoint_root,
+            target_name=target_name,
+            source_safetensors=source_safetensors,
+            template_checkpoint_dir=template_dir,
+        )
+        imported_targets.append(target_name)
+
+    return {
+        "importedTargets": imported_targets,
+        "searchedDirs": searched_dirs,
+        "foundSources": {key: str(value) for key, value in found_sources.items()},
+        "missingTargets": missing_targets,
+        "error": "",
+    }
+
+
+def hydrate_native_split_assets(checkpoint_root: Path) -> dict[str, Any]:
+    found_sources, searched_dirs = find_local_ace_native_assets(
+        extra_roots=[checkpoint_root, checkpoint_root / "split_files"],
+    )
+    imported_assets: list[str] = []
+    missing_assets: list[str] = []
+
+    for spec in REQUIRED_MUSIC_GEN_NATIVE_FILES:
+        destination = checkpoint_root / Path(spec["relativePath"])
+        if destination.exists() and destination.is_file():
+            continue
+
+        source_file = found_sources.get(spec["id"])
+        if source_file is None:
+            missing_assets.append(spec["relativePath"])
+            continue
+
+        hardlink_or_copy_file(source_file, destination)
+        imported_assets.append(spec["relativePath"])
+
+    return {
+        "importedAssets": imported_assets,
+        "searchedDirs": searched_dirs,
+        "foundSources": {key: str(value) for key, value in found_sources.items()},
+        "missingAssets": missing_assets,
+    }
+
+
+def get_requirement_specifiers(*, python_version: tuple[int, int, int] | None) -> list[str]:
+    if platform.system() == "Windows":
+        windows_audio_separator_variant = (
+            "audio-separator[gpu]==0.41.1"
+            if is_windows_nvidia_machine()
+            else "audio-separator[dml]==0.41.1"
+        )
+        return [
+            windows_audio_separator_variant,
+            "hf_xet>=1.4.2",
+            "huggingface_hub>=0.34,<1.0",
+        ]
+    if platform.system() == "Linux":
+        backend = _detect_linux_gpu_backend()
+        if backend == "cuda":
+            return [
+                "audio-separator[gpu]==0.41.1",
+                "hf_xet>=1.4.2",
+                "huggingface_hub>=0.34,<1.0",
+            ]
+        # ROCm and CPU both start from the CPU base; the backend plan swaps torch wheels
+        return [
+            "audio-separator[cpu]==0.41.1",
+            "hf_xet>=1.4.2",
+            "huggingface_hub>=0.34,<1.0",
+        ]
+    return [
+        "audio-separator[cpu]==0.41.1",
+        "hf_xet>=1.4.2",
+        "huggingface_hub>=0.34,<1.0",
+    ]
+
+
+def get_music_generation_runtime_requirements(
+    *,
+    python_version: tuple[int, int, int] | None,
+) -> list[str]:
+    if not is_music_generation_python_compatible(python_version):
+        return []
+
+    return [
+        "diffusers==0.39.0",
+        "transformers==4.57.6",
+        "accelerate==1.12.0",
+        "soundfile",
+        "numpy",
+        "huggingface_hub>=0.34,<1.0",
+    ]
+
+
+def compute_file_sha256(file_path: Path) -> str:
+    digest = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower()
+
+
+def download_url_to_path(url: str, destination: Path) -> None:
+    request = Request(url, headers={"User-Agent": "OpenStudio-AI-Installer/1.0"})
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, destination.open(
+        "wb"
+    ) as output:
+        while True:
+            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            output.write(chunk)
+
+
+def install_pinned_wheel(
+    runtime_python: Path,
+    runtime_root: Path,
+    *,
+    wheel_url: str,
+    wheel_sha256: str,
+    wheel_filename: str,
+    description: str,
+    state: str,
+    progress: float,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    step_label: str | None = None,
+    step_index: int = 0,
+    step_count: int = 0,
+    download_hint: str = "",
+    is_large_download: bool = False,
+    raise_on_error: bool = False,
+    error_code: str = "dependency_bootstrap_failed",
+) -> None:
+    emit(
+        state,
+        progress,
+        message=description,
+        stepLabel=step_label or description,
+        stepIndex=step_index,
+        stepCount=step_count,
+        downloadHint=download_hint,
+        isLargeDownload=is_large_download,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+
+    cache_dir = runtime_root / ".openstudio-pinned-wheels"
+    wheel_path = cache_dir / wheel_filename
+    expected_sha256 = wheel_sha256.removeprefix("sha256:").strip().lower()
+
+    try:
+        should_download = True
+        if wheel_path.exists():
+            should_download = compute_file_sha256(wheel_path) != expected_sha256
+            if should_download:
+                wheel_path.unlink()
+
+        if should_download:
+            download_url_to_path(wheel_url, wheel_path)
+
+        actual_sha256 = compute_file_sha256(wheel_path)
+        if actual_sha256 != expected_sha256:
+            raise InstallerStepError(
+                f"{description} failed. Downloaded wheel checksum mismatch.",
+                error_code=error_code,
+                progress=progress,
+            )
+    except InstallerStepError:
+        raise
+    except Exception as exc:
+        if raise_on_error:
+            raise InstallerStepError(
+                f"{description} failed: {type(exc).__name__}: {exc}",
+                error_code=error_code,
+                progress=progress,
+            ) from exc
+        fail(
+            f"{description} failed: {type(exc).__name__}: {exc}",
+            progress=progress,
+            error_code=error_code,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    run_step(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            str(wheel_path),
+        ],
+        state=state,
+        progress=progress,
+        description=description,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code=error_code,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+        raise_on_error=raise_on_error,
+        step_label=step_label,
+        step_index=step_index,
+        step_count=step_count,
+        download_hint=download_hint,
+        is_large_download=is_large_download,
+    )
+
+
+def apply_windows_cuda_pytorch_overlay(
+    runtime_python: Path,
+    runtime_root: Path,
+    *,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> None:
+    run_step(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "uninstall",
+            "-y",
+            "torch",
+            "torchvision",
+            "torchaudio",
+        ],
+        state="installing",
+        progress=0.575,
+        description="Removing CPU PyTorch wheels before enabling CUDA music generation",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+    )
+
+    stream_step(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--verbose",
+            "--index-url",
+            get_windows_cuda_pytorch_index_url(),
+            *get_windows_cuda_pytorch_packages(),
+        ],
+        state="installing",
+        progress=0.59,
+        description="Installing CUDA PyTorch wheels for ACE-Step music generation",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+        step_label="Installing CUDA PyTorch wheels for ACE-Step music generation",
+        download_hint="This is the largest Windows AI runtime step. OpenStudio is downloading and installing the pinned CUDA PyTorch wheels, which can stay quiet for several minutes.",
+        is_large_download=True,
+    )
+
+
+def install_windows_music_acceleration_stack(
+    runtime_python: Path,
+    runtime_root: Path,
+    *,
+    state: str,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    step_index_offset: int = 0,
+    step_count: int = 0,
+    raise_on_error: bool = False,
+    error_code: str = "music_acceleration_setup_failed",
+) -> None:
+    triton_package = get_windows_triton_package_spec()
+    flash_attn_asset = get_windows_flash_attn_asset()
+
+    run_step(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            triton_package,
+        ],
+        state=state,
+        progress=0.605,
+        description="Installing Triton for the ACE-Step accelerated LM runtime",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code=error_code,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+        raise_on_error=raise_on_error,
+        step_label="Installing Triton for music generation",
+        step_index=step_index_offset + 1,
+        step_count=step_count,
+        download_hint="OpenStudio is installing the Windows Triton runtime used by ACE-Step acceleration.",
+        is_large_download=True,
+    )
+
+    install_pinned_wheel(
+        runtime_python,
+        runtime_root,
+        wheel_url=str(flash_attn_asset.get("url", "")).strip(),
+        wheel_sha256=str(flash_attn_asset.get("sha256", "")).strip(),
+        wheel_filename=str(
+            flash_attn_asset.get("fileName")
+            or flash_attn_asset.get("filename")
+            or "flash_attn.whl"
+        ).strip(),
+        description="Installing Flash Attention for the ACE-Step accelerated LM runtime",
+        state=state,
+        progress=0.615,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        step_label="Installing Flash Attention for music generation",
+        step_index=step_index_offset + 2,
+        step_count=step_count,
+        download_hint="OpenStudio is installing the pinned Flash Attention wheel for the Windows ACE-Step stack.",
+        is_large_download=True,
+        raise_on_error=raise_on_error,
+        error_code=error_code,
+    )
+
+
+def download_music_generation_source(
+    runtime_python: Path,
+    runtime_root: Path,
+    *,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    raise_on_error: bool = False,
+) -> Path:
+    source_root = runtime_root / MUSIC_GEN_SOURCE_DIRNAME
+    run_step(
+        [
+            str(runtime_python),
+            "-c",
+            (
+                "from pathlib import Path\n"
+                "from huggingface_hub import snapshot_download\n"
+                f"source_root = Path(r'{source_root}')\n"
+                "source_root.mkdir(parents=True, exist_ok=True)\n"
+                "snapshot_download(\n"
+                f"    repo_id=r'{MUSIC_GEN_SPACE_REPO}',\n"
+                f"    repo_type=r'{MUSIC_GEN_SPACE_REPO_TYPE}',\n"
+                "    local_dir=str(source_root),\n"
+                ")\n"
+                "print('ok')\n"
+            ),
+        ],
+        state="installing",
+        progress=0.52,
+        description="Preparing the ACE-Step Diffusers runtime source",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+        raise_on_error=raise_on_error,
+    )
+    return source_root
+
+
+def log_subprocess_output(result: subprocess.CompletedProcess[str], description: str) -> None:
+    write_log(f"$ {description}")
+    write_log(f"[exitCode] {result.returncode}")
+    if result.stdout:
+        write_log("[stdout]")
+        write_log(result.stdout)
+    if result.stderr:
+        write_log("[stderr]")
+        write_log(result.stderr)
+
+
+def safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def is_path_within(path: Path, root: Path) -> bool:
+    resolved_path = safe_resolve(path)
+    resolved_root = safe_resolve(root)
+    try:
+        resolved_path.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
+def extract_windows_access_denied_path(output: str) -> Path | None:
+    match = re.search(r"Access is denied:\s*['\"]([^'\"]+)['\"]", output, re.IGNORECASE)
+    if match is None:
+        return None
+    return Path(match.group(1))
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def fetch_json(url: str, *, timeout: int = DOWNLOAD_TIMEOUT_SECONDS) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "OpenStudio-AI-Installer/1.0"})
+    with urlopen(request, timeout=timeout) as response:
+        payload = response.read()
+    return json.loads(payload.decode("utf-8"))
+
+
+def resolve_audio_separator_models_json(runtime_root: Path) -> Path:
+    candidates = [
+        runtime_root / "Lib" / "site-packages" / "audio_separator" / "models.json",
+        runtime_root / "lib" / "site-packages" / "audio_separator" / "models.json",
+        runtime_root / "python" / "Lib" / "site-packages" / "audio_separator" / "models.json",
+        runtime_root / "python" / "lib" / "site-packages" / "audio_separator" / "models.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    for candidate in runtime_root.rglob("models.json"):
+        if candidate.parent.name == "audio_separator":
+            return candidate
+
+    raise ModelDownloadError(
+        f"OpenStudio could not find audio_separator/models.json inside {runtime_root}.",
+        error_code="model_manifest_missing",
+    )
+
+
+def append_activity_line(recent_lines: deque[str], line: str) -> list[str]:
+    recent_lines.append(line)
+    write_log(line)
+    return list(recent_lines)
+
+
+def emit_model_download_status(
+    *,
+    progress: float,
+    message: str,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    step_label: str,
+    activity_lines: list[str],
+    bytes_downloaded: int = 0,
+    bytes_total: int = 0,
+    status_warning: str = "",
+    status_warning_code: str = "",
+) -> None:
+    payload: dict[str, Any] = {
+        "message": message,
+        "stepLabel": step_label,
+        "stepIndex": 1,
+        "stepCount": 1,
+        "downloadHint": "The stem model download can take a while on slower connections.",
+        "isLargeDownload": True,
+        "activityLines": activity_lines,
+        "installSource": install_source,
+        "requiresExternalPython": requires_external_python,
+        "pythonDetected": python_detected,
+        "buildRuntimeMode": build_runtime_mode,
+    }
+    if bytes_downloaded > 0:
+        payload["bytesDownloaded"] = bytes_downloaded
+    if bytes_total > 0:
+        payload["bytesTotal"] = bytes_total
+    if status_warning:
+        payload["statusWarning"] = status_warning
+    if status_warning_code:
+        payload["statusWarningCode"] = status_warning_code
+    emit("downloading_model", progress, **payload)
+
+
+def load_model_manifests(runtime_root: Path, recent_lines: deque[str]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    append_activity_line(recent_lines, "Resolving model manifests...")
+    bundled_manifest_path = resolve_audio_separator_models_json(runtime_root)
+    bundled_manifest = read_json_file(bundled_manifest_path)
+    log_event(
+        "installer",
+        "downloading_model",
+        "bundled_model_manifest_loaded",
+        manifestPath=str(bundled_manifest_path),
+    )
+    append_activity_line(recent_lines, f"Loaded bundled model list from {bundled_manifest_path}")
+
+    try:
+        uvr_manifest = fetch_json(MODEL_DOWNLOAD_MANIFEST_URL)
+        log_event(
+            "installer",
+            "downloading_model",
+            "uvr_model_manifest_loaded",
+            manifestUrl=MODEL_DOWNLOAD_MANIFEST_URL,
+        )
+        append_activity_line(recent_lines, "Loaded UVR model manifest")
+    except Exception as exc:
+        uvr_manifest = None
+        log_event(
+            "installer",
+            "downloading_model",
+            "uvr_model_manifest_failed",
+            manifestUrl=MODEL_DOWNLOAD_MANIFEST_URL,
+            errorCode="model_manifest_fetch_failed",
+            exceptionType=type(exc).__name__,
+            exceptionMessage=str(exc),
+        )
+        append_activity_line(recent_lines, "Could not load the UVR model manifest; continuing with bundled model metadata")
+
+    return uvr_manifest, bundled_manifest
+
+
+def build_simple_model_entry(model_name: str, model_type: str, files: list[str], source: str, friendly_name: str) -> dict[str, Any]:
+    ordered_files = list(dict.fromkeys(files))
+    if model_name in ordered_files:
+        ordered_files = [model_name, *[entry for entry in ordered_files if entry != model_name]]
+    return {
+        "source": source,
+        "modelType": model_type,
+        "filename": model_name,
+        "friendlyName": friendly_name,
+        "downloadFiles": ordered_files,
+    }
+
+
+def find_model_in_manifest(manifest: dict[str, Any], model_name: str, *, source: str) -> dict[str, Any] | None:
+    for key, models in manifest.items():
+        if not key.endswith("_download_list") or not isinstance(models, dict):
+            continue
+
+        model_type = key.removesuffix("_download_list").upper()
+        for friendly_name, value in models.items():
+            if isinstance(value, str):
+                if value == model_name:
+                    return build_simple_model_entry(model_name, model_type, [value], source, friendly_name)
+                continue
+
+            if not isinstance(value, dict):
+                continue
+
+            if model_type == "DEMUCS":
+                yaml_name = next((entry for entry in value.keys() if isinstance(entry, str) and entry.endswith(".yaml")), "")
+                download_files = list(value.values())
+                if yaml_name and (yaml_name == model_name or model_name in download_files):
+                    return build_simple_model_entry(model_name, model_type, download_files, source, friendly_name)
+                continue
+
+            matching_model_key = next((entry for entry in value.keys() if entry == model_name), None)
+            matching_yaml_value = next((entry for entry in value.values() if entry == model_name), None)
+            if matching_model_key is None and matching_yaml_value is None:
+                continue
+
+            model_file = matching_model_key or next(iter(value.keys()))
+            sidecar_file = value[model_file]
+            return build_simple_model_entry(model_name, model_type, [model_file, sidecar_file], source, friendly_name)
+
+    return None
+
+
+def build_download_urls(*, source: str, model_type: str, filename: str) -> list[str]:
+    if filename.startswith("http://") or filename.startswith("https://"):
+        return [filename]
+
+    if source == "audio_separator":
+        return [
+            f"{AUDIO_SEPARATOR_HF_REPO_URL_PREFIX}/{filename}",
+            f"{AUDIO_SEPARATOR_MODEL_REPO_URL_PREFIX}/{filename}",
+        ]
+
+    if model_type == "MDX23C" and filename.endswith(".yaml"):
+        return [
+            f"{UVR_MODEL_CONFIG_URL_PREFIX}/{filename}",
+            f"{AUDIO_SEPARATOR_MODEL_REPO_URL_PREFIX}/{filename}",
+        ]
+
+    return [
+        f"{UVR_MODEL_REPO_URL_PREFIX}/{filename}",
+        f"{AUDIO_SEPARATOR_MODEL_REPO_URL_PREFIX}/{filename}",
+    ]
+
+
+def resolve_model_download_plan(runtime_root: Path, model_name: str, recent_lines: deque[str]) -> list[dict[str, Any]]:
+    uvr_manifest, bundled_manifest = load_model_manifests(runtime_root, recent_lines)
+
+    candidates: list[dict[str, Any]] = []
+
+    bundled_match = find_model_in_manifest(bundled_manifest, model_name, source="audio_separator")
+    if bundled_match is not None:
+        candidates.append(bundled_match)
+
+    if uvr_manifest is not None:
+        uvr_match = find_model_in_manifest(uvr_manifest, model_name, source="uvr")
+        if uvr_match is not None:
+            candidates.append(uvr_match)
+
+    if not candidates:
+        raise ModelDownloadError(
+            f"OpenStudio could not resolve download information for the stem model {model_name}.",
+            error_code="model_manifest_missing",
+        )
+
+    selected = candidates[0]
+    log_event(
+        "installer",
+        "downloading_model",
+        "model_resolution_succeeded",
+        modelName=model_name,
+        source=selected["source"],
+        modelType=selected["modelType"],
+        friendlyName=selected["friendlyName"],
+        downloadFiles=selected["downloadFiles"],
+    )
+    append_activity_line(
+        recent_lines,
+        f"Resolved {model_name} via {selected['source']} model metadata ({selected['friendlyName']})",
+    )
+
+    targets: list[dict[str, Any]] = []
+    for entry in selected["downloadFiles"]:
+        filename = urlparse(entry).path.rsplit("/", 1)[-1] if entry.startswith("http") else entry
+        targets.append(
+            {
+                "filename": filename,
+                "urls": build_download_urls(
+                    source=selected["source"],
+                    model_type=selected["modelType"],
+                    filename=entry,
+                ),
+            }
+        )
+
+    return targets
+
+
+def _calculate_download_progress(file_index: int, file_count: int, file_progress: float) -> float:
+    normalized = (file_index + max(0.0, min(file_progress, 1.0))) / max(file_count, 1)
+    return MODEL_DOWNLOAD_PROGRESS_START + (MODEL_DOWNLOAD_PROGRESS_END - MODEL_DOWNLOAD_PROGRESS_START) * normalized
+
+
+def download_file_with_retries(
+    *,
+    urls: list[str],
+    target_path: Path,
+    file_label: str,
+    file_index: int,
+    file_count: int,
+    recent_lines: deque[str],
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    completed_bytes: int,
+) -> int:
+    temp_path = target_path.with_suffix(target_path.suffix + ".part")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    activity_line = f"Preparing to download {file_label}"
+    activity_lines = append_activity_line(recent_lines, activity_line)
+    emit_model_download_status(
+        progress=_calculate_download_progress(file_index, file_count, 0.0),
+        message=f"Connecting to the host for {file_label}",
+        step_label=f"Connecting to the host for {file_label}",
+        activity_lines=activity_lines,
+        bytes_downloaded=completed_bytes,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    for url_index, url in enumerate(urls):
+        append_activity_line(recent_lines, f"Attempting {file_label} from {url}")
+        log_event(
+            "installer",
+            "downloading_model",
+            "model_file_download_started",
+            fileName=target_path.name,
+            fileLabel=file_label,
+            url=url,
+            attempt=url_index + 1,
+        )
+
+        heartbeat_stop = threading.Event()
+        heartbeat_payload: dict[str, Any] = {
+            "progress": _calculate_download_progress(file_index, file_count, 0.0),
+            "message": f"Connecting to the host for {file_label}",
+            "stepLabel": f"Connecting to the host for {file_label}",
+            "activityLines": list(recent_lines),
+            "bytesDownloaded": completed_bytes,
+            "bytesTotal": 0,
+        }
+        heartbeat_lock = threading.Lock()
+
+        def heartbeat_loop() -> None:
+            while not heartbeat_stop.wait(DOWNLOAD_HEARTBEAT_SECONDS):
+                with heartbeat_lock:
+                    payload = dict(heartbeat_payload)
+                emit_model_download_status(
+                    progress=payload["progress"],
+                    message=payload["message"],
+                    step_label=payload["stepLabel"],
+                    activity_lines=payload["activityLines"],
+                    bytes_downloaded=payload.get("bytesDownloaded", 0),
+                    bytes_total=payload.get("bytesTotal", 0),
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                )
+
+        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+
+        downloaded = 0
+        total_size = 0
+        try:
+            request = Request(url, headers={"User-Agent": "OpenStudio-AI-Installer/1.0"})
+            with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+                status_code = getattr(response, "status", response.getcode())
+                if status_code != 200:
+                    raise HTTPError(url, status_code, "Unexpected status code", response.headers, None)
+
+                content_length_header = response.headers.get("Content-Length", "0")
+                total_size = int(content_length_header or "0")
+                with heartbeat_lock:
+                    heartbeat_payload["message"] = f"Downloading {file_label}"
+                    heartbeat_payload["stepLabel"] = f"Downloading {file_label}"
+                    heartbeat_payload["bytesDownloaded"] = completed_bytes
+                    heartbeat_payload["bytesTotal"] = completed_bytes + total_size if total_size > 0 else 0
+
+                with temp_path.open("wb") as handle:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+
+                        file_progress = downloaded / total_size if total_size > 0 else 0.0
+                        aggregate_downloaded = completed_bytes + downloaded
+                        aggregate_total = completed_bytes + total_size if total_size > 0 else 0
+                        activity_lines = list(recent_lines)
+                        progress = _calculate_download_progress(file_index, file_count, file_progress)
+
+                        with heartbeat_lock:
+                            heartbeat_payload["progress"] = progress
+                            heartbeat_payload["message"] = f"Downloading {file_label}"
+                            heartbeat_payload["stepLabel"] = f"Downloading {file_label}"
+                            heartbeat_payload["activityLines"] = activity_lines
+                            heartbeat_payload["bytesDownloaded"] = aggregate_downloaded
+                            heartbeat_payload["bytesTotal"] = aggregate_total
+
+                        emit_model_download_status(
+                            progress=progress,
+                            message=f"Downloading {file_label}",
+                            step_label=f"Downloading {file_label}",
+                            activity_lines=activity_lines,
+                            bytes_downloaded=aggregate_downloaded,
+                            bytes_total=aggregate_total,
+                            install_source=install_source,
+                            requires_external_python=requires_external_python,
+                            python_detected=python_detected,
+                            build_runtime_mode=build_runtime_mode,
+                        )
+
+            if downloaded == 0 or (total_size > 0 and downloaded != total_size):
+                raise ModelDownloadError(
+                    f"OpenStudio received an empty or incomplete download for {target_path.name}. Retry AI tools setup.",
+                    error_code="model_transfer_interrupted",
+                )
+
+            temp_path.replace(target_path)
+            final_size = target_path.stat().st_size
+            completed_total = completed_bytes + final_size
+            append_activity_line(recent_lines, f"Finished downloading {target_path.name}")
+            log_event(
+                "installer",
+                "downloading_model",
+                "model_file_download_succeeded",
+                fileName=target_path.name,
+                fileLabel=file_label,
+                url=url,
+                bytesDownloaded=final_size,
+            )
+            emit_model_download_status(
+                progress=_calculate_download_progress(file_index + 1, file_count, 0.0),
+                message=f"Downloaded {file_label}",
+                step_label=f"Downloaded {file_label}",
+                activity_lines=list(recent_lines),
+                bytes_downloaded=completed_total,
+                install_source=install_source,
+                requires_external_python=requires_external_python,
+                python_detected=python_detected,
+                build_runtime_mode=build_runtime_mode,
+            )
+            return final_size
+        except ModelDownloadError:
+            temp_path.unlink(missing_ok=True)
+            raise
+        except HTTPError as exc:
+            append_activity_line(recent_lines, f"{target_path.name} was not available at {url} ({exc.code})")
+            log_event(
+                "installer",
+                "downloading_model",
+                "model_file_download_http_error",
+                fileName=target_path.name,
+                url=url,
+                httpStatus=exc.code,
+            )
+            if temp_path.exists():
+                temp_path.unlink()
+            if url_index == len(urls) - 1:
+                raise ModelDownloadError(
+                    f"OpenStudio could not find {target_path.name} at the published model URLs.",
+                    error_code="model_url_unavailable",
+                ) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            if temp_path.exists():
+                temp_path.unlink()
+            error_code = "model_download_timeout" if downloaded == 0 else "model_transfer_interrupted"
+            message = (
+                f"OpenStudio timed out before {target_path.name} started downloading."
+                if downloaded == 0
+                else f"OpenStudio lost connection while downloading {target_path.name}."
+            )
+            append_activity_line(recent_lines, message)
+            raise ModelDownloadError(message, error_code=error_code) from exc
+        except (URLError, OSError) as exc:
+            if temp_path.exists():
+                temp_path.unlink()
+            error_code = "model_download_timeout" if downloaded == 0 else "model_transfer_interrupted"
+            message = (
+                f"OpenStudio could not start downloading {target_path.name}: {exc}."
+                if downloaded == 0
+                else f"OpenStudio lost connection while downloading {target_path.name}: {exc}."
+            )
+            append_activity_line(recent_lines, message)
+            if url_index == len(urls) - 1:
+                raise ModelDownloadError(message, error_code=error_code) from exc
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+
+    raise ModelDownloadError(
+        f"OpenStudio could not download {target_path.name}.",
+        error_code="model_download_failed",
+    )
+
+
+def run_step(
+    command: list[str],
+    *,
+    state: str,
+    progress: float,
+    description: str,
+    install_source: str,
+    requires_external_python: bool,
+    error_code: str,
+    python_detected: bool,
+    build_runtime_mode: str,
+    cwd: Path | None = None,
+    raise_on_error: bool = False,
+    step_label: str | None = None,
+    step_index: int = 0,
+    step_count: int = 0,
+    download_hint: str = "",
+    is_large_download: bool = False,
+) -> None:
+    result = run_step_process(
+        command,
+        state=state,
+        progress=progress,
+        description=description,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code=error_code,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=cwd,
+        step_label=step_label,
+        step_index=step_index,
+        step_count=step_count,
+        download_hint=download_hint,
+        is_large_download=is_large_download,
+    )
+    if result.returncode != 0:
+        if raise_on_error:
+            raise InstallerStepError(
+                f"{description} failed. See the install log for details.",
+                error_code=error_code,
+                progress=progress,
+            )
+        fail(
+            f"{description} failed. See the install log for details.",
+            progress=progress,
+            error_code=error_code,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+
+def normalize_installer_command(command: list[str]) -> list[str]:
+    normalized = list(command)
+    if (
+        len(normalized) >= 4
+        and normalized[1:4] == ["-m", "pip", "install"]
+        and "--no-cache-dir" not in normalized
+    ):
+        normalized.insert(4, "--no-cache-dir")
+    return normalized
+
+
+def run_step_process(
+    command: list[str],
+    *,
+    state: str,
+    progress: float,
+    description: str,
+    install_source: str,
+    requires_external_python: bool,
+    error_code: str,
+    python_detected: bool,
+    build_runtime_mode: str,
+    cwd: Path | None = None,
+    raise_on_error: bool = False,
+    step_label: str | None = None,
+    step_index: int = 0,
+    step_count: int = 0,
+    download_hint: str = "",
+    is_large_download: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = normalize_installer_command(command)
+    log_event(
+        "installer",
+        state,
+        "step_start",
+        description=description,
+        command=command,
+        buildRuntimeMode=build_runtime_mode,
+    )
+    emit(
+        state,
+        progress,
+        message=description,
+        stepLabel=step_label or description,
+        stepIndex=step_index,
+        stepCount=step_count,
+        downloadHint=download_hint,
+        isLargeDownload=is_large_download,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+    result = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    log_subprocess_output(result, " ".join(command))
+    if result.returncode != 0:
+        log_event(
+            "installer",
+            state,
+            "step_failed",
+            description=description,
+            exitCode=result.returncode,
+            errorCode=error_code,
+        )
+    else:
+        log_event(
+            "installer",
+            state,
+            "step_succeeded",
+            description=description,
+            exitCode=result.returncode,
+        )
+    return result
+
+
+def probe_windows_reused_runtime_health(runtime_python: Path) -> bool:
+    if platform.system() != "Windows":
+        return False
+
+    health_check = (
+        "from importlib import import_module, metadata\n"
+        "required = ['audio_separator', 'requests', 'certifi', 'charset_normalizer', 'idna', 'urllib3']\n"
+        "for module_name in required:\n"
+        "    import_module(module_name)\n"
+        "version = metadata.version('audio-separator')\n"
+        "if version != '0.41.1':\n"
+        "    raise SystemExit(f'unexpected audio-separator version: {version}')\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [str(runtime_python), "-c", health_check],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    log_subprocess_output(result, f"{runtime_python} -c <reused runtime health check>")
+    if result.returncode == 0:
+        log_event(
+            "installer",
+            "installing",
+            "reused_runtime_health_check_succeeded",
+            runtimePython=str(runtime_python),
+        )
+        return True
+
+    log_event(
+        "installer",
+        "installing",
+        "reused_runtime_health_check_failed",
+        runtimePython=str(runtime_python),
+        exitCode=result.returncode,
+    )
+    return False
+
+
+def classify_windows_runtime_lock_error(
+    result: subprocess.CompletedProcess[str],
+    runtime_root: Path,
+) -> tuple[bool, str]:
+    if platform.system() != "Windows":
+        return False, ""
+
+    output = "\n".join(part for part in (result.stderr, result.stdout) if part).strip()
+    if not output:
+        return False, ""
+    if "[WinError 5]" not in output and "Access is denied" not in output:
+        return False, ""
+
+    locked_path = extract_windows_access_denied_path(output)
+    if locked_path is None:
+        return False, ""
+
+    site_packages = runtime_root / "Lib" / "site-packages"
+    if not is_path_within(locked_path, site_packages):
+        return False, str(safe_resolve(locked_path))
+
+    return True, str(safe_resolve(locked_path))
+
+
+def repair_windows_reused_runtime(
+    runtime_python: Path,
+    runtime_root: Path,
+    bootstrap_python: Path,
+    runtime_python_version: tuple[int, int, int] | None,
+    bootstrap_python_version: tuple[int, int, int] | None,
+    *,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> tuple[Path, tuple[int, int, int] | None, bool]:
+    if platform.system() != "Windows":
+        run_step(
+            [
+                str(runtime_python),
+                "-m",
+                "pip",
+                "install",
+                "--ignore-installed",
+                "--no-deps",
+                *WINDOWS_REUSED_RUNTIME_REPAIR_PACKAGES,
+            ],
+            state="installing",
+            progress=0.3,
+            description="Repairing the AI tools environment",
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            error_code="dependency_bootstrap_failed",
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+        return runtime_python, runtime_python_version, True
+
+    if probe_windows_reused_runtime_health(runtime_python):
+        log_event(
+            "installer",
+            "installing",
+            "reused_runtime_repair_skipped",
+            runtimePython=str(runtime_python),
+            runtimePythonVersion=format_python_version(runtime_python_version),
+        )
+        emit(
+            "installing",
+            0.3,
+            message="Reused AI tools environment looks healthy",
+            stepLabel="Reused AI tools environment looks healthy",
+            activityLines=[
+                f"Existing runtime uses Python {format_python_version(runtime_python_version)}.",
+                "audio-separator and the networking packages are already importable.",
+            ],
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+        return runtime_python, runtime_python_version, True
+
+    terminated_before_repair = terminate_windows_runtime_lock_holders(runtime_root)
+    if terminated_before_repair:
+        log_event(
+            "installer",
+            "installing",
+            "runtime_lock_holders_terminated_before_repair",
+            runtimeRoot=str(runtime_root),
+            terminatedProcesses=terminated_before_repair,
+        )
+
+    repair_result = run_step_process(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--ignore-installed",
+            "--no-deps",
+            *WINDOWS_REUSED_RUNTIME_REPAIR_PACKAGES,
+        ],
+        state="installing",
+        progress=0.3,
+        description="Repairing the AI tools environment",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+    if repair_result.returncode == 0:
+        return runtime_python, runtime_python_version, True
+
+    is_locked_runtime, locked_path = classify_windows_runtime_lock_error(repair_result, runtime_root)
+    if not is_locked_runtime:
+        fail(
+            "Repairing the AI tools environment failed. See the install log for details.",
+            progress=0.3,
+            error_code="dependency_bootstrap_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    log_event(
+        "installer",
+        "installing",
+        "runtime_locked_file_detected",
+        runtimeRoot=str(runtime_root),
+        lockedPath=locked_path,
+        exitCode=repair_result.returncode,
+    )
+    emit(
+        "installing",
+        0.31,
+        message="A locked AI runtime file was detected. Rebuilding the AI tools environment.",
+        stepLabel="Rebuilding the AI tools environment on Windows",
+        activityLines=[
+            "Windows denied access while pip was replacing a managed runtime file.",
+            f"Locked file: {locked_path}",
+            f"OpenStudio will rebuild only {runtime_root.name} and keep downloaded models/checkpoints.",
+        ],
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+
+    try:
+        terminated_runtime_processes = remove_tree_with_retries(runtime_root)
+    except OSError as exc:
+        fail(
+            f"OpenStudio could not rebuild the managed runtime because '{runtime_root}' could not be removed: {exc}",
+            state="installing",
+            progress=0.31,
+            error_code="runtime_rebuild_remove_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    if terminated_runtime_processes:
+        log_event(
+            "installer",
+            "installing",
+            "runtime_lock_holders_terminated",
+            runtimeRoot=str(runtime_root),
+            terminatedProcesses=terminated_runtime_processes,
+        )
+
+    log_event(
+        "installer",
+        "creating_venv",
+        "runtime_locked_rebuild_started",
+        runtimeRoot=str(runtime_root),
+        bootstrapPython=str(bootstrap_python),
+        bootstrapPythonVersion=format_python_version(bootstrap_python_version),
+        lockedPath=locked_path,
+    )
+    run_step(
+        [str(bootstrap_python), "-m", "venv", str(runtime_root)],
+        state="creating_venv",
+        progress=0.32,
+        description="Rebuilding the AI tools environment on Windows",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="runtime_locked_rebuild_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+    runtime_python = resolve_runtime_python(runtime_root)
+    runtime_python_version = read_python_version_info(runtime_python) or bootstrap_python_version
+    log_event(
+        "installer",
+        "creating_venv",
+        "runtime_locked_rebuild_succeeded",
+        runtimeRoot=str(runtime_root),
+        runtimePython=str(runtime_python),
+        runtimePythonVersion=format_python_version(runtime_python_version),
+    )
+    return runtime_python, runtime_python_version, False
+
+
+def ensure_runtime_pip(
+    runtime_python: Path,
+    *,
+    progress: float,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> None:
+    probe = subprocess.run(
+        [str(runtime_python), "-m", "pip", "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    log_subprocess_output(probe, f"{runtime_python} -m pip --version")
+    if probe.returncode == 0:
+        log_event(
+            "installer",
+            "installing",
+            "runtime_pip_available",
+            runtimePython=str(runtime_python),
+        )
+        return
+
+    log_event(
+        "installer",
+        "installing",
+        "runtime_pip_missing",
+        runtimePython=str(runtime_python),
+        exitCode=probe.returncode,
+    )
+    run_step(
+        [str(runtime_python), "-m", "ensurepip", "--upgrade"],
+        state="installing",
+        progress=progress,
+        description="Repairing Python packaging support in the AI tools environment",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+
+def stream_step(
+    command: list[str],
+    *,
+    state: str,
+    progress: float,
+    description: str,
+    install_source: str,
+    requires_external_python: bool,
+    error_code: str,
+    python_detected: bool,
+    build_runtime_mode: str,
+    cwd: Path | None = None,
+    raise_on_error: bool = False,
+    step_label: str | None = None,
+    step_index: int = 0,
+    step_count: int = 0,
+    download_hint: str = "",
+    is_large_download: bool = False,
+) -> None:
+    command = normalize_installer_command(command)
+    log_event(
+        "installer",
+        state,
+        "step_start",
+        description=description,
+        command=command,
+        buildRuntimeMode=build_runtime_mode,
+    )
+    emit(
+        state,
+        progress,
+        message=description,
+        stepLabel=step_label or description,
+        stepIndex=step_index,
+        stepCount=step_count,
+        downloadHint=download_hint,
+        isLargeDownload=is_large_download,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+    write_log(f"$ {' '.join(command)}")
+    recent_lines: deque[str] = deque(maxlen=12)
+
+    with subprocess.Popen(
+        command,
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    ) as process:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            recent_lines.append(line)
+            write_log(line)
+            emit(
+                state,
+                progress,
+                message=description,
+                stepLabel=step_label or description,
+                stepIndex=step_index,
+                stepCount=step_count,
+                downloadHint=download_hint,
+                isLargeDownload=is_large_download,
+                activityLines=list(recent_lines),
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+            )
+        return_code = process.wait()
+
+    write_log(f"[exitCode] {return_code}")
+    if return_code != 0:
+        detail = " ".join(recent_lines).strip()
+        log_event(
+            "installer",
+            state,
+            "step_failed",
+            description=description,
+            exitCode=return_code,
+            errorCode=error_code,
+            lastOutput=detail,
+        )
+        if raise_on_error:
+            raise InstallerStepError(
+                f"{description} failed. {detail if detail else 'See the install log for details.'}",
+                error_code=error_code,
+                progress=progress,
+            )
+        fail(
+            f"{description} failed. {detail if detail else 'See the install log for details.'}",
+            progress=progress,
+            error_code=error_code,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+    log_event(
+        "installer",
+        state,
+        "step_succeeded",
+        description=description,
+        exitCode=return_code,
+    )
+
+
+def verify_runtime(
+    runtime_python: Path,
+    runtime_root: Path,
+    *,
+    require_audio_separator: bool,
+    require_music_generation: bool = False,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    raise_on_error: bool = False,
+) -> None:
+    # Downloaded OpenStudio runtimes must be relocatable, so they should not retain
+    # virtualenv markers or depend on external metadata that a plain dev venv lacks.
+    # The external-Python fallback intentionally creates a venv in runtime_root, and
+    # that layout is valid for the unbundled dev path.
+    requires_relocatable_runtime = (
+        install_source == "downloadedRuntime" and not requires_external_python and platform.system() != "Darwin"
+    )
+
+    if requires_relocatable_runtime and (runtime_root / "pyvenv.cfg").exists():
+        if raise_on_error:
+            raise InstallerStepError(
+                f"The extracted AI runtime at {runtime_root} still looks like a virtual environment and is not relocatable.",
+                error_code="runtime_not_relocatable",
+                progress=0.6,
+            )
+        fail(
+            f"The extracted AI runtime at {runtime_root} still looks like a virtual environment and is not relocatable.",
+            progress=0.6,
+            error_code="runtime_not_relocatable",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    if requires_relocatable_runtime and not (runtime_root / ".openstudio-ai-runtime.json").exists():
+        if raise_on_error:
+            raise InstallerStepError(
+                f"The extracted AI runtime at {runtime_root} is missing OpenStudio runtime metadata.",
+                error_code="runtime_validation_failed",
+                progress=0.6,
+            )
+        fail(
+            f"The extracted AI runtime at {runtime_root} is missing OpenStudio runtime metadata.",
+            progress=0.6,
+            error_code="runtime_validation_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    resolved_runtime_python = safe_resolve(runtime_python)
+    resolved_current_python = safe_resolve(Path(sys.executable))
+    same_interpreter = resolved_runtime_python == resolved_current_python
+    verification_scope = "full" if require_audio_separator else "base"
+
+    write_log(f"runtime_python={resolved_runtime_python}")
+    write_log(f"current_python={resolved_current_python}")
+    write_log(f"verificationMode={'in-process' if same_interpreter else 'subprocess'}")
+    write_log(f"verificationScope={verification_scope}")
+    log_event(
+        "installer",
+        "verifying_base_runtime" if not require_audio_separator else "verifying_runtime",
+        "verification_start",
+        runtimePython=str(resolved_runtime_python),
+        currentPython=str(resolved_current_python),
+        verificationMode="in-process" if same_interpreter else "subprocess",
+        verificationScope=verification_scope,
+    )
+
+    emit(
+        "verifying_base_runtime" if not require_audio_separator else "verifying_runtime",
+        0.65,
+        message="Verifying the AI tools base runtime" if not require_audio_separator else "Verifying the AI tools runtime",
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+
+    verification_mode = "in-process" if same_interpreter else "subprocess"
+    write_log(f"verificationMode={verification_mode}")
+
+    if same_interpreter:
+        try:
+            if require_audio_separator:
+                import audio_separator.separator  # noqa: F401
+            else:
+                import pip  # noqa: F401
+            if require_music_generation:
+                import acestep  # noqa: F401
+        except Exception as exc:
+            write_log(f"[in-process verification error] {type(exc).__name__}: {exc}")
+            log_event(
+                "installer",
+                "verifying_base_runtime" if not require_audio_separator else "verifying_runtime",
+                "verification_failed",
+                verificationMode="in-process",
+                verificationScope=verification_scope,
+                errorCode="runtime_validation_failed",
+                exceptionType=type(exc).__name__,
+                exceptionMessage=str(exc),
+            )
+            if raise_on_error:
+                raise InstallerStepError(
+                    f"Verifying the AI tools {'base runtime' if not require_audio_separator else 'runtime'} failed: {type(exc).__name__}: {exc}",
+                    error_code="base_runtime_invalid" if not require_audio_separator else "runtime_validation_failed",
+                    progress=0.65,
+                )
+            fail(
+                f"Verifying the AI tools {'base runtime' if not require_audio_separator else 'runtime'} failed: {type(exc).__name__}: {exc}",
+                progress=0.65,
+                error_code="base_runtime_invalid" if not require_audio_separator else "runtime_validation_failed",
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+        write_log(
+            "[in-process verification] "
+            + (
+                "runtime imports succeeded"
+                if require_audio_separator or require_music_generation
+                else "pip import succeeded"
+            )
+        )
+        log_event(
+            "installer",
+            "verifying_base_runtime" if not require_audio_separator else "verifying_runtime",
+            "verification_succeeded",
+            verificationMode="in-process",
+            verificationScope=verification_scope,
+        )
+        return
+
+    run_step(
+        (
+            [
+                str(runtime_python),
+                "-c",
+                "import audio_separator.separator; import acestep; print('ok')",
+            ]
+            if require_audio_separator and require_music_generation
+            else [str(runtime_python), "-c", "import audio_separator.separator; print('ok')"]
+            if require_audio_separator
+            else [str(runtime_python), "-c", "import acestep; print('ok')"]
+            if require_music_generation
+            else [str(runtime_python), "-m", "pip", "--version"]
+        ),
+        state="verifying_runtime" if require_audio_separator else "verifying_base_runtime",
+        progress=0.65,
+        description="Verifying the AI tools runtime" if require_audio_separator else "Verifying the AI tools base runtime",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="runtime_validation_failed" if require_audio_separator else "base_runtime_invalid",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        cwd=runtime_root,
+        raise_on_error=raise_on_error,
+    )
+
+
+def load_backend_install_plan(install_plan_path: Path) -> dict[str, Any]:
+    try:
+        install_plan = json.loads(install_plan_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        fail(
+            f"OpenStudio could not parse the backend install plan: {type(exc).__name__}: {exc}",
+            progress=0.68,
+            error_code="backend_install_plan_invalid",
+            installSource="downloadedRuntime",
+            requiresExternalPython=False,
+            pythonDetected=False,
+            buildRuntimeMode="downloaded-runtime",
+        )
+        raise AssertionError("unreachable")
+
+    if not isinstance(install_plan, dict) or not isinstance(install_plan.get("steps"), list):
+        fail(
+            "OpenStudio received an invalid backend install plan.",
+            progress=0.68,
+            error_code="backend_install_plan_invalid",
+            installSource="downloadedRuntime",
+            requiresExternalPython=False,
+            pythonDetected=False,
+            buildRuntimeMode="downloaded-runtime",
+        )
+        raise AssertionError("unreachable")
+
+    return install_plan
+
+
+def select_rocm_architecture_plan(install_plan: dict[str, Any], backend: str) -> dict[str, Any]:
+    if backend != "rocm" or platform.system() != "Linux":
+        return install_plan
+    try:
+        result = subprocess.run(["rocminfo"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return install_plan
+    if result.returncode != 0 or not re.search(r"Name:\s+gfx1151\b", result.stdout or ""):
+        return install_plan
+    return load_backend_install_plan(Path(__file__).with_name("ai-runtime-install-plan-linux-rocm-gfx1151.json"))
+
+
+def apply_backend_install_plan(
+    runtime_python: Path,
+    runtime_root: Path,
+    install_plan: dict[str, Any],
+    *,
+    backend_requested: str,
+    selected_features: list[str],
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> None:
+    install_plan = select_rocm_architecture_plan(install_plan, backend_requested)
+    plan_id = str(install_plan.get("id", "")).strip()
+    package_source = str(install_plan.get("packageSource", "")).strip()
+    steps = install_plan.get("steps", [])
+
+    write_log(f"backendRequested={backend_requested}")
+    write_log(f"installPlanId={plan_id}")
+    write_log(f"packageSource={package_source}")
+    log_event(
+        "installer",
+        "installing_backend",
+        "backend_install_start",
+        backendRequested=backend_requested,
+        installPlanId=plan_id,
+        packageSource=package_source,
+        stepCount=len(steps),
+    )
+
+    emit(
+        "installing_backend",
+        0.74,
+        message=f"Installing the {backend_requested} AI backend",
+        stepLabel=f"Installing the {backend_requested} AI backend",
+        stepIndex=1 if steps else 0,
+        stepCount=len(steps),
+        backendRequested=backend_requested,
+        installPlanId=plan_id,
+        packageSource=package_source,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+
+    for index, step in enumerate(steps, start=1):
+        step_type = str(step.get("type", "")).strip()
+        step_features = normalize_feature_selection(
+            step.get("features", []),
+            default=classify_backend_step_features(step),
+        )
+        if selected_features and not any(feature_id in selected_features for feature_id in step_features):
+            log_event(
+                "installer",
+                "installing_backend",
+                "backend_install_step_skipped",
+                backendRequested=backend_requested,
+                installPlanId=plan_id,
+                stepIndex=index,
+                stepType=step_type,
+                stepFeatures=step_features,
+                selectedFeatures=selected_features,
+            )
+            continue
+
+        description = str(step.get("description", f"Applying backend install step {index}")).strip()
+        step_label = str(step.get("stepLabel", description)).strip() or description
+        download_hint = str(step.get("downloadHint", "")).strip()
+        is_large_download = bool(step.get("isLargeDownload", False))
+        step_progress = min(0.74 + (0.12 * index / max(len(steps), 1)), 0.86)
+        step_error_code = str(step.get("errorCode", "backend_install_failed")).strip() or "backend_install_failed"
+        non_fatal_for_stem_separation = bool(step.get("nonFatalForStemSeparation", False))
+        try:
+            if step_type == "pip_install":
+                command: list[str] = [str(runtime_python), "-m", "pip", "install", "--upgrade"]
+                index_url = str(step.get("indexUrl", "")).strip()
+                if index_url:
+                    command += ["--index-url", index_url]
+                find_links = str(step.get("findLinks", "")).strip()
+                if find_links:
+                    command += ["--find-links", find_links]
+                extra_index_urls = step.get("extraIndexUrls", [])
+                if isinstance(extra_index_urls, list):
+                    for extra_index_url in extra_index_urls:
+                        if str(extra_index_url).strip():
+                            command += ["--extra-index-url", str(extra_index_url).strip()]
+                packages = step.get("packages", [])
+                if not isinstance(packages, list) or not packages:
+                    fail(
+                        f"Backend install plan step {index} is missing packages.",
+                        progress=0.74,
+                        error_code="backend_install_plan_invalid",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                command += [str(package) for package in packages]
+                stream_step(
+                    command,
+                    state="installing_backend",
+                    progress=step_progress,
+                    description=description,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    error_code=step_error_code,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    cwd=runtime_root,
+                    raise_on_error=True,
+                    step_label=step_label,
+                    step_index=index,
+                    step_count=len(steps),
+                    download_hint=download_hint,
+                    is_large_download=is_large_download,
+                )
+            elif step_type == "pip_uninstall":
+                packages = step.get("packages", [])
+                if not isinstance(packages, list) or not packages:
+                    fail(
+                        f"Backend install plan step {index} is missing packages.",
+                        progress=0.74,
+                        error_code="backend_install_plan_invalid",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                run_step(
+                    [str(runtime_python), "-m", "pip", "uninstall", "-y", *[str(package) for package in packages]],
+                    state="installing_backend",
+                    progress=step_progress,
+                    description=description,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    error_code=step_error_code,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    cwd=runtime_root,
+                    raise_on_error=True,
+                    step_label=step_label,
+                    step_index=index,
+                    step_count=len(steps),
+                    download_hint=download_hint,
+                    is_large_download=is_large_download,
+                )
+            elif step_type == "install_pinned_wheel":
+                wheel_url = str(step.get("url", "")).strip()
+                wheel_sha256 = str(step.get("sha256", "")).strip()
+                wheel_filename = str(step.get("fileName", "")).strip()
+                if not wheel_url or not wheel_sha256 or not wheel_filename:
+                    fail(
+                        f"Backend install plan step {index} is missing a pinned wheel URL, file name, or checksum.",
+                        progress=0.74,
+                        error_code="backend_install_plan_invalid",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                install_pinned_wheel(
+                    runtime_python,
+                    runtime_root,
+                    wheel_url=wheel_url,
+                    wheel_sha256=wheel_sha256,
+                    wheel_filename=wheel_filename,
+                    description=description,
+                    state="installing_backend",
+                    progress=step_progress,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    step_label=step_label,
+                    step_index=index,
+                    step_count=len(steps),
+                    download_hint=download_hint,
+                    is_large_download=is_large_download,
+                    raise_on_error=True,
+                    error_code=step_error_code,
+                )
+            elif step_type == "hf_snapshot_pip_install":
+                repo_id = str(step.get("repoId", "")).strip()
+                repo_type = str(step.get("repoType", "model")).strip() or "model"
+                local_dir_name = str(step.get("localDirName", "")).strip()
+                if not repo_id or not local_dir_name:
+                    fail(
+                        f"Backend install plan step {index} is missing a Hugging Face repo id or localDirName.",
+                        progress=0.74,
+                        error_code="backend_install_plan_invalid",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                source_root = runtime_root / local_dir_name
+                run_step(
+                    [
+                        str(runtime_python),
+                        "-c",
+                        (
+                            "from pathlib import Path\n"
+                            "from huggingface_hub import snapshot_download\n"
+                            f"source_root = Path(r'{source_root}')\n"
+                            "source_root.mkdir(parents=True, exist_ok=True)\n"
+                            "snapshot_download(\n"
+                            f"    repo_id=r'{repo_id}',\n"
+                            f"    repo_type=r'{repo_type}',\n"
+                            "    local_dir=str(source_root),\n"
+                            ")\n"
+                            "print('ok')\n"
+                        ),
+                    ],
+                    state="installing_backend",
+                    progress=step_progress,
+                    description=description,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    error_code=step_error_code,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    cwd=runtime_root,
+                    raise_on_error=True,
+                    step_label=step_label,
+                    step_index=index,
+                    step_count=len(steps),
+                    download_hint=download_hint,
+                    is_large_download=is_large_download,
+                )
+                run_step(
+                    [
+                        str(runtime_python),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-deps",
+                        str(source_root),
+                    ],
+                    state="installing_backend",
+                    progress=step_progress,
+                    description=f"Installing {repo_id} into the managed runtime",
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    error_code=step_error_code,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    cwd=runtime_root,
+                    raise_on_error=True,
+                    step_label=step_label,
+                    step_index=index,
+                    step_count=len(steps),
+                    download_hint=download_hint,
+                    is_large_download=is_large_download,
+                )
+            else:
+                fail(
+                    f"Unsupported backend install step type '{step_type}'.",
+                    progress=0.74,
+                    error_code="backend_install_plan_invalid",
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+        except InstallerStepError as exc:
+            if not non_fatal_for_stem_separation:
+                raise
+
+            log_event(
+                "installer",
+                "installing_backend",
+                "backend_install_step_degraded",
+                backendRequested=backend_requested,
+                installPlanId=plan_id,
+                stepIndex=index,
+                stepType=step_type,
+                errorCode=exc.error_code,
+                errorMessage=exc.message,
+            )
+            emit(
+                "installing_backend",
+                step_progress,
+                message=description,
+                stepLabel=step_label,
+                stepIndex=index,
+                stepCount=len(steps),
+                downloadHint=download_hint,
+                isLargeDownload=is_large_download,
+                activityLines=[
+                    f"{description} could not be completed.",
+                    exc.message,
+                    "OpenStudio will keep going and mark music generation as incomplete if acceleration is still unavailable.",
+                ],
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+    log_event(
+        "installer",
+        "installing_backend",
+        "backend_install_succeeded",
+        backendRequested=backend_requested,
+        installPlanId=plan_id,
+        packageSource=package_source,
+    )
+
+
+def probe_runtime(
+    runtime_python: Path,
+    runtime_root: Path,
+    models_dir: Path,
+    model_name: str,
+    *,
+    acceleration_mode: str,
+    music_checkpoint_root: Path,
+    music_model_id: str,
+    backend_requested: str,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+    raise_on_error: bool = False,
+) -> dict[str, object]:
+    log_event(
+        "probe",
+        "probing_runtime",
+        "probe_start",
+        accelerationMode=acceleration_mode,
+        modelName=model_name,
+    )
+    emit(
+        "probing_runtime",
+        0.96,
+        message="Checking AI runtime capabilities",
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+
+    metadata_path = runtime_root / ".openstudio-ai-runtime.json"
+    runtime_version = ""
+    if metadata_path.exists():
+        try:
+            runtime_version = json.loads(metadata_path.read_text(encoding="utf-8")).get("runtimeVersion", "")
+        except Exception:
+            runtime_version = ""
+
+    resolved_runtime_python = safe_resolve(runtime_python)
+    resolved_current_python = safe_resolve(Path(sys.executable))
+
+    if resolved_runtime_python == resolved_current_python:
+        report = probe_runtime_capabilities(
+            models_dir=str(models_dir),
+            model_name=model_name,
+            acceleration_mode=acceleration_mode,
+            music_checkpoint_root=str(music_checkpoint_root),
+            music_model_id=music_model_id,
+        )
+    else:
+        probe_script = Path(__file__).with_name("ai_runtime_probe.py")
+        probe_command = [
+            str(runtime_python),
+            str(probe_script),
+            "--models-dir",
+            str(models_dir),
+            "--model",
+            model_name,
+            "--music-gen-checkpoint-root",
+            str(music_checkpoint_root),
+            "--music-gen-model",
+            music_model_id,
+            "--acceleration-mode",
+            acceleration_mode,
+        ]
+        result = subprocess.run(
+            probe_command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=runtime_root,
+        )
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                write_log(line)
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                write_log(line)
+
+        report_line = ""
+        for line in reversed(result.stdout.splitlines() if result.stdout else []):
+            candidate = line.strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                report_line = candidate
+                break
+
+        if report_line:
+            try:
+                report = json.loads(report_line)
+            except json.JSONDecodeError:
+                report = {
+                    "runtimeReady": False,
+                    "fallbackReason": "runtime probe returned invalid JSON",
+                    "errorCode": "probe_output_invalid",
+                    "supportedBackends": ["cpu"],
+                    "selectedBackend": "cpu",
+                    "backendDecisionTrace": ["runtime probe returned invalid JSON"],
+                    "probeDurationMs": 0,
+                }
+        else:
+            report = {
+                "runtimeReady": False,
+                "fallbackReason": "runtime probe produced no JSON output",
+                "errorCode": "probe_output_missing",
+                "supportedBackends": ["cpu"],
+                "selectedBackend": "cpu",
+                "backendDecisionTrace": ["runtime probe produced no JSON output"],
+                "probeDurationMs": 0,
+            }
+    report["runtimeVersion"] = runtime_version
+    report["modelVersion"] = model_name
+
+    write_log(f"supportedBackends={','.join(report.get('supportedBackends', []))}")
+    write_log(f"selectedBackend={report.get('selectedBackend', 'cpu')}")
+    if report.get("fallbackReason"):
+        write_log(f"fallbackReason={report['fallbackReason']}")
+    if report.get("backendDecisionTrace"):
+        write_log(f"backendDecisionTrace={' | '.join(report['backendDecisionTrace'])}")
+
+    if not report.get("runtimeReady"):
+        log_event(
+            "probe",
+            "probing_runtime",
+            "probe_failed",
+            errorCode=report.get("errorCode", "runtime_validation_failed"),
+            fallbackReason=report.get("fallbackReason", ""),
+            supportedBackends=report.get("supportedBackends", []),
+            selectedBackend=report.get("selectedBackend", "cpu"),
+            probeDurationMs=report.get("probeDurationMs", 0),
+        )
+        if raise_on_error:
+            raise InstallerStepError(
+                "OpenStudio could not validate the managed AI runtime on this machine.",
+                error_code="backend_probe_failed" if backend_requested else "runtime_validation_failed",
+                progress=0.96,
+            )
+        fail(
+            "OpenStudio could not validate the managed AI runtime on this machine.",
+            progress=0.96,
+            error_code="backend_probe_failed" if backend_requested else "runtime_validation_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    requested_backend = backend_requested.strip().lower()
+    selected_backend = str(report.get("selectedBackend", "cpu")).strip().lower()
+    if requested_backend and selected_backend != requested_backend:
+        message = (
+            f"OpenStudio installed the {requested_backend} AI backend, "
+            f"but the runtime probe selected {selected_backend or 'cpu'}."
+        )
+        log_event(
+            "probe",
+            "probing_runtime",
+            "backend_probe_failed",
+            backendRequested=requested_backend,
+            supportedBackends=report.get("supportedBackends", []),
+            selectedBackend=selected_backend or "cpu",
+            fallbackReason=report.get("fallbackReason", ""),
+            probeDurationMs=report.get("probeDurationMs", 0),
+        )
+        if raise_on_error:
+            raise InstallerStepError(
+                message,
+                error_code="backend_probe_failed",
+                progress=0.96,
+            )
+        fail(
+            message,
+            progress=0.96,
+            error_code="backend_probe_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    log_event(
+        "probe",
+        "probing_runtime",
+        "probe_succeeded",
+        supportedBackends=report.get("supportedBackends", []),
+        selectedBackend=report.get("selectedBackend", "cpu"),
+        fallbackReason=report.get("fallbackReason", ""),
+        probeDurationMs=report.get("probeDurationMs", 0),
+    )
+    return report
+
+
+def resolve_fallback_backend_install_plan(runtime_root: Path, backend_requested: str) -> tuple[str, dict[str, Any]] | None:
+    normalized_backend = backend_requested.strip().lower()
+
+    if platform.system() == "Windows":
+        # CUDA failed → try DirectML as fallback
+        if normalized_backend != "cuda":
+            return None
+        fallback_plan_path = (
+            runtime_root / "openstudio-ai-backend-plans" / "ai-runtime-install-plan-windows-directml.json"
+        )
+        if not fallback_plan_path.exists():
+            return None
+        return ("directml", load_backend_install_plan(fallback_plan_path))
+
+    if platform.system() == "Linux":
+        # Linux GPU backends are hardware-specific. Do not silently retry the
+        # same failed backend or fall back to CPU after GPU setup was selected.
+        return None
+
+    return None
+
+
+def prepare_windows_fallback_runtime(runtime_root: Path, runtime_python: Path) -> tuple[Path, Path]:
+    """Build a relocatable candidate without replacing DLLs in the active runtime."""
+    global PENDING_RUNTIME_CANDIDATE
+
+    candidate = runtime_root.with_name(f"stem-runtime-directml-{uuid.uuid4().hex}")
+    try:
+        relative_python = runtime_python.relative_to(runtime_root)
+        shutil.copytree(runtime_root, candidate)
+        candidate_python = candidate / relative_python
+        if not candidate_python.is_file():
+            raise OSError(f"Copied runtime is missing {relative_python}")
+    except (OSError, ValueError) as exc:
+        if candidate.exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+        raise InstallerStepError(
+            f"Could not prepare a separate DirectML runtime: {exc}",
+            error_code="backend_fallback_prepare_failed",
+            progress=0.74,
+        ) from exc
+
+    PENDING_RUNTIME_CANDIDATE = candidate
+    log_event(
+        "installer", "installing_backend", "backend_fallback_candidate_prepared",
+        sourceRuntime=str(runtime_root), candidateRuntime=str(candidate),
+    )
+    return candidate, candidate_python
+
+
+def activate_windows_runtime(base_runtime_root: Path, selected_runtime_root: Path) -> None:
+    """Publish a verified runtime selection with an atomic, allowlisted marker."""
+    global PENDING_RUNTIME_CANDIDATE
+
+    if platform.system() != "Windows":
+        return
+    name = selected_runtime_root.name
+    if name != "stem-runtime" and not re.fullmatch(r"stem-runtime-directml-[0-9a-f]{32}", name):
+        return
+    if selected_runtime_root.parent != base_runtime_root.parent:
+        raise InstallerStepError(
+            "The verified runtime is outside the OpenStudio runtime directory.",
+            error_code="runtime_activation_failed", progress=0.99,
+        )
+
+    marker = base_runtime_root.parent / "stem-runtime-active.txt"
+    temporary_marker = marker.with_name(f"{marker.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary_marker.write_text(name + "\n", encoding="utf-8")
+        os.replace(temporary_marker, marker)
+    except OSError as exc:
+        temporary_marker.unlink(missing_ok=True)
+        raise InstallerStepError(
+            f"Could not activate the verified AI runtime: {exc}",
+            error_code="runtime_activation_failed", progress=0.99,
+        ) from exc
+    if PENDING_RUNTIME_CANDIDATE == selected_runtime_root:
+        PENDING_RUNTIME_CANDIDATE = None
+    log_event("installer", "ready", "runtime_activated", runtimeRoot=str(selected_runtime_root))
+
+
+def bootstrap_runtime(runtime_root: Path, bootstrap_python: Path, selected_features: list[str]) -> Path:
+    install_source = "externalPython"
+    requires_external_python = True
+    python_detected = True
+    build_runtime_mode = "unbundled-dev"
+    reused_existing_runtime = False
+    runtime_python_version: tuple[int, int, int] | None = None
+    bootstrap_python_version = read_python_version_info(bootstrap_python)
+    force_runtime_rebuild = str(os.environ.get("OPENSTUDIO_FORCE_RUNTIME_REBUILD", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if runtime_root.exists():
+        existing_runtime_python = resolve_runtime_python(runtime_root)
+        if existing_runtime_python.exists():
+            if platform.system() == "Windows":
+                existing_runtime_version = read_python_version_info(existing_runtime_python)
+                rebuild_windows_runtime = force_runtime_rebuild or (
+                    bootstrap_python_version is not None
+                    and existing_runtime_version is not None
+                    and existing_runtime_version[:2] != bootstrap_python_version[:2]
+                )
+
+                if rebuild_windows_runtime:
+                    print("Rebuilding the AI tools environment on Windows")
+                    log_event(
+                        "installer",
+                        "creating_venv",
+                        "venv_rebuild_windows_reset",
+                        runtimeRoot=str(runtime_root),
+                        runtimePython=str(existing_runtime_python),
+                        runtimePythonVersion=format_python_version(existing_runtime_version),
+                        bootstrapPython=str(bootstrap_python),
+                        bootstrapPythonVersion=format_python_version(bootstrap_python_version),
+                        forceRuntimeRebuild=force_runtime_rebuild,
+                    )
+                    emit(
+                        "creating_venv",
+                        0.18,
+                        message="Rebuilding the AI tools environment on Windows",
+                        stepLabel="Rebuilding the AI tools environment on Windows",
+                        activityLines=[
+                            "OpenStudio is rebuilding the managed runtime on Windows.",
+                            f"Selected interpreter uses Python {format_python_version(bootstrap_python_version)}.",
+                        ],
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                    try:
+                        terminated_runtime_processes = remove_tree_with_retries(runtime_root)
+                    except OSError as exc:
+                        fail(
+                            f"OpenStudio could not rebuild the managed runtime because '{runtime_root}' is still locked or could not be removed: {exc}",
+                            state="creating_venv",
+                            progress=0.18,
+                            error_code="runtime_rebuild_remove_failed",
+                            installSource=install_source,
+                            requiresExternalPython=requires_external_python,
+                            pythonDetected=python_detected,
+                            buildRuntimeMode=build_runtime_mode,
+                        )
+                    if terminated_runtime_processes:
+                        log_event(
+                            "installer",
+                            "creating_venv",
+                            "runtime_lock_holders_terminated",
+                            runtimeRoot=str(runtime_root),
+                            terminatedProcesses=terminated_runtime_processes,
+                        )
+                    run_step(
+                        [str(bootstrap_python), "-m", "venv", str(runtime_root)],
+                        state="creating_venv",
+                        progress=0.2,
+                        description="Creating the AI tools environment",
+                        install_source=install_source,
+                        requires_external_python=requires_external_python,
+                        error_code="dependency_bootstrap_failed",
+                        python_detected=python_detected,
+                        build_runtime_mode=build_runtime_mode,
+                    )
+                    runtime_python = resolve_runtime_python(runtime_root)
+                    runtime_python_version = read_python_version_info(runtime_python)
+                else:
+                    reused_existing_runtime = True
+                    print("Reusing the existing AI tools environment on Windows")
+                    log_event(
+                        "installer",
+                        "creating_venv",
+                        "venv_reused_windows",
+                        runtimeRoot=str(runtime_root),
+                        runtimePython=str(existing_runtime_python),
+                        runtimePythonVersion=format_python_version(existing_runtime_version),
+                        bootstrapPython=str(bootstrap_python),
+                        bootstrapPythonVersion=format_python_version(bootstrap_python_version),
+                    )
+                    emit(
+                        "creating_venv",
+                        0.2,
+                        message="Reusing the AI tools environment",
+                        stepLabel="Reusing the AI tools environment",
+                        activityLines=[
+                            f"Existing runtime uses Python {format_python_version(existing_runtime_version)}.",
+                            f"Selected interpreter uses Python {format_python_version(bootstrap_python_version)}.",
+                        ],
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                    runtime_python = existing_runtime_python
+                    runtime_python_version = existing_runtime_version
+            elif (
+                bootstrap_python_version is not None
+                and (existing_runtime_version := read_python_version_info(existing_runtime_python)) is not None
+                and existing_runtime_version[:2] != bootstrap_python_version[:2]
+            ):
+                print(
+                    "Rebuilding the AI tools environment to match the selected Python "
+                    f"{format_python_version(bootstrap_python_version)} runtime"
+                )
+                log_event(
+                    "installer",
+                    "creating_venv",
+                    "venv_rebuild_required",
+                    runtimeRoot=str(runtime_root),
+                    runtimePython=str(existing_runtime_python),
+                    runtimePythonVersion=format_python_version(existing_runtime_version),
+                    bootstrapPython=str(bootstrap_python),
+                    bootstrapPythonVersion=format_python_version(bootstrap_python_version),
+                )
+                emit(
+                    "creating_venv",
+                    0.18,
+                    message="Rebuilding the AI tools environment for the selected Python version",
+                    stepLabel="Rebuilding the AI tools environment for the selected Python version",
+                    activityLines=[
+                        f"Existing runtime uses Python {format_python_version(existing_runtime_version)}.",
+                        f"Selected interpreter uses Python {format_python_version(bootstrap_python_version)}.",
+                    ],
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+                try:
+                    remove_tree_with_retries(runtime_root)
+                except OSError as exc:
+                    fail(
+                        f"OpenStudio could not rebuild the managed runtime because '{runtime_root}' could not be removed: {exc}",
+                        state="creating_venv",
+                        progress=0.18,
+                        error_code="runtime_rebuild_remove_failed",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+                run_step(
+                    [str(bootstrap_python), "-m", "venv", str(runtime_root)],
+                    state="creating_venv",
+                    progress=0.2,
+                    description="Creating the AI tools environment",
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    error_code="dependency_bootstrap_failed",
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                )
+                runtime_python = resolve_runtime_python(runtime_root)
+                runtime_python_version = read_python_version_info(runtime_python)
+            else:
+                reused_existing_runtime = True
+                print("Reusing the existing AI tools environment")
+                log_event(
+                    "installer",
+                    "creating_venv",
+                    "venv_reused",
+                    runtimeRoot=str(runtime_root),
+                    runtimePython=str(existing_runtime_python),
+                )
+                emit(
+                    "creating_venv",
+                    0.2,
+                    message="Reusing the AI tools environment",
+                    stepLabel="Reusing the AI tools environment",
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+                runtime_python = existing_runtime_python
+                runtime_python_version = read_python_version_info(runtime_python)
+        else:
+            try:
+                remove_tree_with_retries(runtime_root)
+            except OSError as exc:
+                fail(
+                    f"OpenStudio could not rebuild the managed runtime because '{runtime_root}' could not be removed: {exc}",
+                    state="creating_venv",
+                    progress=0.18,
+                    error_code="runtime_rebuild_remove_failed",
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+            run_step(
+                [str(bootstrap_python), "-m", "venv", str(runtime_root)],
+                state="creating_venv",
+                progress=0.2,
+                description="Creating the AI tools environment",
+                install_source=install_source,
+                requires_external_python=requires_external_python,
+                error_code="dependency_bootstrap_failed",
+                python_detected=python_detected,
+                build_runtime_mode=build_runtime_mode,
+            )
+            runtime_python = resolve_runtime_python(runtime_root)
+            runtime_python_version = read_python_version_info(runtime_python)
+    else:
+        run_step(
+            [str(bootstrap_python), "-m", "venv", str(runtime_root)],
+            state="creating_venv",
+            progress=0.2,
+            description="Creating the AI tools environment",
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            error_code="dependency_bootstrap_failed",
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+        runtime_python = resolve_runtime_python(runtime_root)
+        runtime_python_version = read_python_version_info(runtime_python)
+
+    if reused_existing_runtime:
+        ensure_runtime_pip(
+            runtime_python,
+            progress=0.27,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+        site_packages = runtime_python.parent.parent / "Lib" / "site-packages"
+        broken_entries: list[Path] = []
+        for candidate_name in ("acestep", "ace_step-0.2.0.dist-info"):
+            candidate = site_packages / candidate_name
+            if candidate.is_dir():
+                try:
+                    is_empty = not any(candidate.iterdir())
+                except OSError:
+                    is_empty = False
+                if is_empty:
+                    broken_entries.append(candidate)
+
+        if broken_entries:
+            for broken_entry in broken_entries:
+                shutil.rmtree(broken_entry, ignore_errors=True)
+            repaired_names = ", ".join(path.name for path in broken_entries)
+            print(f"Removed broken ACE-Step package entries: {repaired_names}")
+            log_event(
+                "installer",
+                "installing",
+                "broken_ace_step_package_removed",
+                removedEntries=[str(path) for path in broken_entries],
+            )
+            emit(
+                "installing",
+                0.28,
+                message="Repairing the ACE-Step package installation",
+                stepLabel="Repairing the ACE-Step package installation",
+                activityLines=[f"Removed broken ACE-Step package entries: {repaired_names}"],
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+        if not is_music_generation_python_compatible(runtime_python_version):
+            incompatible_entries: list[Path] = []
+            for candidate in site_packages.glob("ace_step*.dist-info"):
+                if candidate.is_dir():
+                    incompatible_entries.append(candidate)
+            legacy_package_dir = site_packages / "acestep"
+            if legacy_package_dir.is_dir():
+                incompatible_entries.append(legacy_package_dir)
+
+            if incompatible_entries:
+                for incompatible_entry in incompatible_entries:
+                    shutil.rmtree(incompatible_entry, ignore_errors=True)
+                removed_names = ", ".join(path.name for path in incompatible_entries)
+                print(f"Removed incompatible ACE-Step package entries: {removed_names}")
+                log_event(
+                    "installer",
+                    "installing",
+                    "incompatible_ace_step_package_removed",
+                    removedEntries=[str(path) for path in incompatible_entries],
+                    runtimePythonVersion=format_python_version(runtime_python_version),
+                )
+                emit(
+                    "installing",
+                    0.29,
+                    message="Removing incompatible ACE-Step runtime entries",
+                    stepLabel="Removing incompatible ACE-Step runtime entries",
+                    activityLines=[
+                        f"Removed incompatible ACE-Step package entries: {removed_names}",
+                        f"Music generation requires Python 3.11.x or 3.12.x; current runtime is Python {format_python_version(runtime_python_version)}.",
+                    ],
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+
+        runtime_python, runtime_python_version, reused_existing_runtime = repair_windows_reused_runtime(
+            runtime_python,
+            runtime_root,
+            bootstrap_python,
+            runtime_python_version,
+            bootstrap_python_version,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+
+    ensure_runtime_pip(
+        runtime_python,
+        progress=0.34,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    run_step(
+        [str(runtime_python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
+        state="installing",
+        progress=0.35,
+        description="Upgrading Python packaging tools",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    run_step(
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            *get_requirement_specifiers(python_version=runtime_python_version),
+        ],
+        state="installing",
+        progress=0.55,
+        description="Installing AI audio packages",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="dependency_bootstrap_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    if (
+        FEATURE_AUDIO_GENERATION in selected_features
+        and platform.system() == "Windows"
+        and is_music_generation_python_compatible(runtime_python_version)
+        and is_windows_nvidia_machine()
+    ):
+        log_event(
+            "installer",
+            "installing",
+            "windows_cuda_music_overlay_selected",
+            runtimePython=str(runtime_python),
+            runtimePythonVersion=format_python_version(runtime_python_version),
+            pytorchIndexUrl=get_windows_cuda_pytorch_index_url(),
+        )
+        emit(
+            "installing",
+            0.57,
+            message="Preparing CUDA acceleration for ACE-Step music generation",
+            stepLabel="Preparing CUDA acceleration for ACE-Step music generation",
+            activityLines=[
+                "NVIDIA hardware detected on this Windows machine.",
+                "Installing CUDA-capable PyTorch wheels for the ACE-Step runtime.",
+            ],
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+    music_generation_setup_error: InstallerStepError | None = None
+    music_generation_requirements = (
+        get_music_generation_runtime_requirements(python_version=runtime_python_version)
+        if FEATURE_AUDIO_GENERATION in selected_features
+        else []
+    )
+    if music_generation_requirements:
+        try:
+            if (
+                platform.system() == "Windows"
+                and is_windows_nvidia_machine()
+                and is_music_generation_python_compatible(runtime_python_version)
+            ):
+                apply_windows_cuda_pytorch_overlay(
+                    runtime_python,
+                    runtime_root,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                )
+
+            run_step(
+                [
+                    str(runtime_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    *music_generation_requirements,
+                ],
+                state="installing",
+                progress=0.6,
+                description="Installing ACE-Step Diffusers runtime dependencies",
+                install_source=install_source,
+                requires_external_python=requires_external_python,
+                error_code="music_generation_runtime_install_failed",
+                python_detected=python_detected,
+                build_runtime_mode=build_runtime_mode,
+                raise_on_error=True,
+            )
+        except InstallerStepError as exc:
+            music_generation_setup_error = exc
+            log_event(
+                "installer",
+                "installing",
+                "music_generation_setup_degraded",
+                errorCode=exc.error_code,
+                errorMessage=exc.message,
+            )
+            emit(
+                "installing",
+                0.63,
+                message="Stem separation packages are ready, but music generation acceleration could not be fully installed",
+                stepLabel="Continuing with stem separation only",
+                activityLines=[
+                    "OpenStudio will finish stem separation setup and then report music generation as incomplete.",
+                    exc.message,
+                ],
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+    return runtime_python
+
+
+def format_supported_python_range() -> str:
+    if platform.system() == "Windows":
+        return "Python 3.11"
+    return "Python 3.10 through 3.12"
+
+
+def download_model(
+    runtime_python: Path,
+    runtime_root: Path,
+    models_dir: Path,
+    model_name: str,
+    *,
+    backend_requested: str,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> Path:
+    log_event(
+        "installer",
+        "downloading_model",
+        "model_download_start",
+        modelName=model_name,
+    )
+    emit(
+        "downloading_model",
+        0.82,
+        message="Downloading the stem separation model",
+        stepLabel="Downloading the stem separation model",
+        stepIndex=1,
+        stepCount=1,
+        downloadHint="The stem model download can take a while on slower connections.",
+        isLargeDownload=True,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+    )
+    recent_lines: deque[str] = deque(maxlen=12)
+    completed_bytes = 0
+
+    try:
+        targets = resolve_model_download_plan(runtime_root, model_name, recent_lines)
+        for file_index, target in enumerate(targets):
+            target_path = models_dir / target["filename"]
+            file_label = (
+                "the stem separation checkpoint"
+                if target_path.suffix.lower() in {".ckpt", ".onnx", ".pth", ".th"}
+                else "the model configuration"
+            )
+
+            if target_path.exists() and not target_path.is_file():
+                raise ModelDownloadError(
+                    f"OpenStudio needs a model file at {target_path}, but a folder or another non-file item is there. Move that item and retry AI tools setup.",
+                    error_code="model_path_invalid",
+                )
+
+            if is_nonempty_model_file(target_path):
+                existing_size = target_path.stat().st_size
+                completed_bytes += existing_size
+                append_activity_line(recent_lines, f"Using cached {target_path.name}")
+                emit_model_download_status(
+                    progress=_calculate_download_progress(file_index + 1, len(targets), 0.0),
+                    message=f"Using cached {file_label}",
+                    step_label=f"Using cached {file_label}",
+                    activity_lines=list(recent_lines),
+                    bytes_downloaded=completed_bytes,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                )
+                continue
+
+            completed_bytes += download_file_with_retries(
+                urls=target["urls"],
+                target_path=target_path,
+                file_label=file_label,
+                file_index=file_index,
+                file_count=len(targets),
+                recent_lines=recent_lines,
+                install_source=install_source,
+                requires_external_python=requires_external_python,
+                python_detected=python_detected,
+                build_runtime_mode=build_runtime_mode,
+                completed_bytes=completed_bytes,
+            )
+    except ModelDownloadError as exc:
+        log_event(
+            "installer",
+            "downloading_model",
+            "model_download_failed",
+            errorCode=exc.error_code,
+            exceptionType=type(exc).__name__,
+            exceptionMessage=exc.message,
+        )
+        fail(
+            exc.message,
+            progress=0.92,
+            error_code=exc.error_code,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    model_path = models_dir / model_name
+    if not is_nonempty_model_file(model_path):
+        log_event(
+            "installer",
+            "downloading_model",
+            "model_download_failed",
+            errorCode="model_download_failed",
+            reason="model file missing, empty or not a regular file after download",
+            modelPath=str(model_path),
+        )
+        fail(
+            f"OpenStudio could not verify the downloaded stem model in {models_dir}.",
+            progress=0.95,
+            error_code="model_download_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+    log_event(
+        "installer",
+        "downloading_model",
+        "model_download_succeeded",
+        modelPath=str(model_path),
+    )
+    return model_path
+
+
+def download_music_gen_model(
+    runtime_python: Path,
+    music_gen_model: str,
+    music_gen_checkpoint_root: Path,
+    *,
+    install_source: str,
+    requires_external_python: bool,
+    python_detected: bool,
+    build_runtime_mode: str,
+) -> None:
+    checkpoint_root = resolve_music_gen_checkpoint_root(str(music_gen_checkpoint_root))
+    # Setup and inference must agree on cached snapshots. In particular, reuse
+    # complete models in the standard Hugging Face cache instead of downloading
+    # another copy into the managed cache.
+    layout = get_music_generation_required_paths(str(checkpoint_root), music_gen_model)
+    if layout["layoutValid"]:
+        emit("downloading_model", 0.99, message="Reusing the complete local ACE-Step model cache.",
+             stepLabel="ACE-Step model already installed", musicGenerationLayoutValid=True,
+             musicGenerationMainModelPath=layout["mainModelPath"])
+        log_event("installer", "downloading_model", "music_generation_cached_snapshot_reused",
+                  modelPath=layout["mainModelPath"])
+        return
+    runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    log_event(
+        "installer",
+        "downloading_model",
+        "music_generation_prepare_start",
+        musicGenModel=music_gen_model,
+        musicGenCheckpointRoot=str(checkpoint_root),
+        musicGenModelRepo=DEFAULT_MUSIC_GEN_MODEL_REPO,
+        musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+    )
+
+    bootstrap = "\n".join(
+        [
+            "import os",
+            "from pathlib import Path",
+            "from huggingface_hub import snapshot_download",
+            f"cache_root = Path(r'{checkpoint_root}')",
+            "cache_root.mkdir(parents=True, exist_ok=True)",
+            "os.environ.setdefault('HF_HOME', str(cache_root))",
+            "os.environ.setdefault('HF_ENABLE_PARALLEL_LOADING', 'YES')",
+            "snapshot_download(",
+            f"    repo_id=r'{DEFAULT_MUSIC_GEN_MODEL_REPO}',",
+            "    cache_dir=str(cache_root),",
+            ")",
+            "print('ok')",
+        ]
+    )
+
+    stream_step(
+        [str(runtime_python), "-c", bootstrap],
+        state="downloading_model",
+        progress=0.97,
+        description="Downloading the ACE-Step Diffusers model cache",
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="music_model_download_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        step_label="Downloading ACE-Step Diffusers model",
+        step_index=1,
+        step_count=1,
+        download_hint="OpenStudio is downloading ACE-Step/acestep-v15-xl-turbo-diffusers into the managed Hugging Face cache.",
+        is_large_download=True,
+    )
+
+    runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+    emit(
+        "downloading_model",
+        0.99,
+        message="ACE-Step Diffusers model cache is ready.",
+        stepLabel="ACE-Step Diffusers model cache is ready",
+        stepIndex=1,
+        stepCount=1,
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+        musicGenerationModelId=music_gen_model,
+        musicGenerationModelRepoId=DEFAULT_MUSIC_GEN_MODEL_REPO,
+        musicGenerationCheckpointRoot=str(checkpoint_root),
+        musicGenerationLayoutValid=True,
+        musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+        musicGenerationDefaultProfile=runtime_profiles.get("defaultProfile", ""),
+    )
+    log_event(
+        "installer",
+        "downloading_model",
+        "music_generation_prepare_succeeded",
+        musicGenModel=music_gen_model,
+        musicGenCheckpointRoot=str(checkpoint_root),
+        musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+    )
+    return
+
+    layout = get_music_generation_required_paths(
+        checkpoint_root=str(checkpoint_root),
+        model_name=music_gen_model,
+    )
+    runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+    native_profile = runtime_profiles["profiles"].get("ace-diffusers", {})
+    missing_profile_assets = list(native_profile.get("missingAssets", []))
+    log_event(
+        "installer",
+        "downloading_model",
+        "music_generation_prepare_start",
+        musicGenModel=music_gen_model,
+        musicGenCheckpointRoot=str(checkpoint_root),
+        musicGenModelRepo=DEFAULT_MUSIC_GEN_MODEL_REPO,
+        musicGenSharedRepo=DEFAULT_MUSIC_GEN_SHARED_REPO,
+        musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+        musicGenerationMissingProfileAssets=missing_profile_assets,
+    )
+
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    cached_native_asset_import = hydrate_native_split_assets(checkpoint_root)
+    if cached_native_asset_import.get("importedAssets"):
+        layout = get_music_generation_required_paths(
+            checkpoint_root=str(checkpoint_root),
+            model_name=music_gen_model,
+        )
+        runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+        native_profile = runtime_profiles["profiles"].get("ace-diffusers", {})
+        missing_profile_assets = list(native_profile.get("missingAssets", []))
+        log_event(
+            "installer",
+            "downloading_model",
+            "music_generation_imported_cached_native_assets",
+            musicGenModel=music_gen_model,
+            musicGenCheckpointRoot=str(checkpoint_root),
+            importedAssets=cached_native_asset_import.get("importedAssets", []),
+        )
+
+    if layout["layoutValid"] and not missing_profile_assets:
+        emit(
+            "downloading_model",
+            0.97,
+            message="Pinned ACE-Step music generation model and runtime profiles are already installed",
+            stepLabel="Pinned ACE-Step music generation model and runtime profiles are already installed",
+            stepIndex=1,
+            stepCount=1,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+            musicGenerationModelId=music_gen_model,
+            musicGenerationCheckpointRoot=str(checkpoint_root),
+            musicGenerationLayoutValid=True,
+            musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+            musicGenerationDefaultProfile=runtime_profiles.get("defaultProfile", ""),
+        )
+        log_event(
+            "installer",
+            "downloading_model",
+            "music_generation_prepare_skipped_existing",
+            musicGenModel=music_gen_model,
+            musicGenCheckpointRoot=str(checkpoint_root),
+        )
+        return
+
+    hub_cache_dir = checkpoint_root.parent / MUSIC_GEN_HUB_CACHE_DIRNAME
+    hub_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    shared_repo_download_lines = [
+        "snapshot_download(",
+        f"    repo_id=r'{DEFAULT_MUSIC_GEN_SHARED_REPO}',",
+        "    local_dir=str(checkpoint_root),",
+        "    cache_dir=str(hub_cache_dir),",
+        "    local_dir_use_symlinks=False,",
+    ]
+    if missing_profile_assets:
+        asset_specs = {
+            str(spec["relativePath"]): spec
+            for spec in REQUIRED_MUSIC_GEN_NATIVE_FILES
+        }
+        patterns = []
+        for asset in missing_profile_assets:
+            spec = asset_specs.get(asset)
+            source_paths = (
+                list(spec.get("sourceRelativePaths", (asset,)))
+                if spec is not None
+                else [asset]
+            )
+            patterns.extend(source_paths)
+        shared_repo_download_lines.append(f"    allow_patterns={patterns!r},")
+    shared_repo_download_lines.append(")")
+
+    bootstrap_lines = [
+        "from pathlib import Path",
+        "from huggingface_hub import snapshot_download",
+        f"checkpoint_root = Path(r'{checkpoint_root}')",
+        f"hub_cache_dir = Path(r'{hub_cache_dir}')",
+        "checkpoint_root.mkdir(parents=True, exist_ok=True)",
+        "hub_cache_dir.mkdir(parents=True, exist_ok=True)",
+        *shared_repo_download_lines,
+    ]
+    use_legacy_wrapper = str(os.environ.get("OPENSTUDIO_USE_LEGACY_ACE_WRAPPER", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if use_legacy_wrapper and not (checkpoint_root / music_gen_model).exists():
+        bootstrap_lines.extend(
+            [
+                "snapshot_download(",
+                f"    repo_id=r'{DEFAULT_MUSIC_GEN_MODEL_REPO}',",
+                f"    local_dir=str(checkpoint_root / r'{music_gen_model}'),",
+                "    cache_dir=str(hub_cache_dir),",
+                "    local_dir_use_symlinks=False,",
+                ")",
+            ]
+        )
+    bootstrap_lines.append("print('ok')")
+    bootstrap = "\n".join(bootstrap_lines)
+
+    stream_step(
+        [str(runtime_python), "-c", bootstrap],
+        state="downloading_model",
+        progress=0.97,
+        description=(
+            "Downloading the pinned ACE-Step XL Turbo model"
+            if not missing_profile_assets
+            else "Downloading the pinned ACE-Step XL Turbo runtime profile assets"
+        ),
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        error_code="music_model_download_failed",
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+        step_label=(
+            "Downloading the pinned ACE-Step XL Turbo model"
+            if not missing_profile_assets
+            else "Downloading the pinned ACE-Step Native XL Turbo profile assets"
+        ),
+        step_index=1,
+        step_count=1,
+        download_hint=(
+            "Downloading pinned ACE-Step repositories into the configured checkpoint root."
+            if not missing_profile_assets
+            else "Downloading the missing ACE-Step assets required for the Native XL Turbo profile."
+        ),
+        is_large_download=True,
+    )
+
+    imported_profile_targets: list[str] = []
+    native_asset_import = hydrate_native_split_assets(checkpoint_root)
+    imported_native_assets = list(native_asset_import.get("importedAssets", []))
+    if imported_native_assets:
+        emit(
+            "downloading_model",
+            0.972,
+            message="Importing local ACE-Step model assets",
+            stepLabel="Importing local ACE-Step model assets",
+            stepIndex=1,
+            stepCount=1,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+            musicGenerationModelId=music_gen_model,
+            musicGenerationCheckpointRoot=str(checkpoint_root),
+            musicGenerationImportedNativeAssets=imported_native_assets,
+        )
+        log_event(
+            "installer",
+            "downloading_model",
+            "music_generation_imported_native_assets",
+            musicGenModel=music_gen_model,
+            musicGenCheckpointRoot=str(checkpoint_root),
+            importedAssets=imported_native_assets,
+            searchedDirs=native_asset_import.get("searchedDirs", []),
+            foundSources=native_asset_import.get("foundSources", {}),
+        )
+
+    layout = get_music_generation_required_paths(
+        checkpoint_root=str(checkpoint_root),
+        model_name=music_gen_model,
+    )
+    runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+    if not layout["layoutValid"]:
+        fail(
+            "OpenStudio could not verify the pinned ACE-Step checkpoint layout after download.",
+            progress=0.97,
+            error_code="music_model_download_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+            musicGenerationModelId=music_gen_model,
+            musicGenerationCheckpointRoot=str(checkpoint_root),
+            musicGenerationImportedNativeAssets=imported_native_assets,
+        )
+    legacy_profile_import = {
+        "importedTargets": [],
+        "searchedDirs": [],
+        "foundSources": {},
+        "missingTargets": [],
+        "error": "",
+    }
+    if "ace-diffusers" not in runtime_profiles.get("availableProfiles", []):
+        if not imported_native_assets:
+            native_asset_import = hydrate_native_split_assets(checkpoint_root)
+        runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+
+    if use_legacy_wrapper and not (checkpoint_root / "acestep-5Hz-lm-4B" / "model.safetensors").exists():
+        legacy_profile_import = hydrate_legacy_runtime_profiles(checkpoint_root)
+        imported_profile_targets = list(legacy_profile_import.get("importedTargets", []))
+        if imported_profile_targets:
+            emit(
+                "downloading_model",
+                0.975,
+                message="Importing local legacy ACE runtime profile assets",
+                stepLabel="Importing local legacy ACE runtime profile assets",
+                stepIndex=1,
+                stepCount=1,
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=python_detected,
+                buildRuntimeMode=build_runtime_mode,
+                musicGenerationModelId=music_gen_model,
+                musicGenerationCheckpointRoot=str(checkpoint_root),
+                musicGenerationImportedProfiles=imported_profile_targets,
+            )
+            log_event(
+                "installer",
+                "downloading_model",
+                "music_generation_imported_local_profiles",
+                musicGenModel=music_gen_model,
+                musicGenCheckpointRoot=str(checkpoint_root),
+                importedTargets=imported_profile_targets,
+                searchedDirs=legacy_profile_import.get("searchedDirs", []),
+                foundSources=legacy_profile_import.get("foundSources", {}),
+            )
+        elif legacy_profile_import.get("error"):
+            log_event(
+                "installer",
+                "downloading_model",
+                "music_generation_local_profile_import_skipped",
+                musicGenModel=music_gen_model,
+                musicGenCheckpointRoot=str(checkpoint_root),
+                error=legacy_profile_import.get("error", ""),
+                searchedDirs=legacy_profile_import.get("searchedDirs", []),
+            )
+
+        runtime_profiles = get_music_runtime_profiles(str(checkpoint_root))
+
+    if "ace-diffusers" not in runtime_profiles.get("availableProfiles", []):
+        native_profile = runtime_profiles["profiles"].get("ace-diffusers", {})
+        missing_profile_assets = list(native_profile.get("missingAssets", []))
+        searched_dirs = list(
+            dict.fromkeys(
+                list(native_asset_import.get("searchedDirs", []))
+                + list(legacy_profile_import.get("searchedDirs", []))
+            )
+        )
+        fail(
+            "OpenStudio installed the ACE-Step Diffusers backend, but could not verify the model cache afterward. "
+            + (
+                "Still missing: " + ", ".join(missing_profile_assets) + ". "
+                if missing_profile_assets
+                else ""
+            )
+            + (
+                "Looked for local ACE-Step model files in: " + ", ".join(searched_dirs) + "."
+                if searched_dirs
+                else "No local ACE-Step model directories were configured or discovered."
+            ),
+            progress=0.97,
+            error_code="music_profile_assets_incomplete",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+            musicGenerationModelId=music_gen_model,
+            musicGenerationCheckpointRoot=str(checkpoint_root),
+            musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+            musicGenerationDefaultProfile=runtime_profiles.get("defaultProfile", ""),
+            musicGenerationMissingProfileAssets=missing_profile_assets,
+            musicGenerationLocalProfileImportSearchedDirs=searched_dirs,
+            musicGenerationLocalProfileImportFoundSources={
+                **dict(native_asset_import.get("foundSources", {})),
+                **dict(legacy_profile_import.get("foundSources", {})),
+            },
+        )
+
+    log_event(
+        "installer",
+        "downloading_model",
+        "music_generation_prepare_succeeded",
+        musicGenModel=music_gen_model,
+        musicGenCheckpointRoot=str(checkpoint_root),
+        musicGenerationAvailableProfiles=runtime_profiles.get("availableProfiles", []),
+        importedTargets=imported_profile_targets,
+    )
+
+
+def main() -> None:
+    global LOG_PATH, SESSION_ID, RUNTIME_CANDIDATE, FALLBACK_ATTEMPTED
+    global START_TIME_MONOTONIC
+
+    parser = argparse.ArgumentParser(description="Install OpenStudio AI tools")
+    parser.add_argument("--runtime-root", required=True, help="Directory for the prepared AI runtime")
+    parser.add_argument("--models-dir", required=True, help="Directory where stem-separation models should be stored")
+    parser.add_argument("--model", default=DEFAULT_MODEL_NAME, help="Stem-separation model filename")
+    parser.add_argument("--music-gen-model", default=DEFAULT_MUSIC_GEN_MODEL, help="Music-generation model identifier")
+    parser.add_argument(
+        "--music-gen-checkpoint-root",
+        default="",
+        help="ACE-Step Diffusers cache root (default: ~/.cache/ace-step/diffusers)",
+    )
+    parser.add_argument("--bootstrap-with", help="Python executable to use for dev fallback bootstrapping")
+    parser.add_argument("--verify-existing-runtime", action="store_true", help="Verify the already-prepared OpenStudio runtime and download the model")
+    parser.add_argument("--log-path", help="Detailed installer log file path")
+    parser.add_argument("--session-id", default="", help="Install session id for correlated logging")
+    parser.add_argument("--runtime-candidate", default="", help="Selected runtime candidate identity")
+    parser.add_argument("--fallback-attempted", action="store_true", help="True when this install is using a fallback runtime candidate")
+    parser.add_argument("--backend-requested", default="", help="Requested backend overlay identity for Windows base runtimes")
+    parser.add_argument("--backend-install-plan", default="", help="Path to a JSON backend install plan")
+    parser.add_argument("--features", default=",".join(DEFAULT_INSTALL_FEATURES), help="Comma-separated AI feature ids to install")
+    args = parser.parse_args()
+
+    runtime_root = Path(args.runtime_root).expanduser().resolve()
+    base_runtime_root = runtime_root
+    models_dir = Path(args.models_dir).expanduser().resolve()
+    music_gen_checkpoint_root = resolve_music_gen_checkpoint_root(args.music_gen_checkpoint_root)
+    bootstrap_python = Path(args.bootstrap_with).expanduser().resolve() if args.bootstrap_with else None
+    LOG_PATH = Path(args.log_path).expanduser().resolve() if args.log_path else None
+    SESSION_ID = args.session_id
+    RUNTIME_CANDIDATE = args.runtime_candidate
+    FALLBACK_ATTEMPTED = bool(args.fallback_attempted)
+    START_TIME_MONOTONIC = time.monotonic()
+
+    if LOG_PATH is not None:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LOG_PATH.write_text("", encoding="utf-8")
+
+    write_log(f"OpenStudio AI tools installer started on {platform.platform()}")
+    write_log(f"sys.executable={sys.executable}")
+    write_log(f"runtime_root={runtime_root}")
+    write_log(f"models_dir={models_dir}")
+    write_log(f"music_gen_checkpoint_root={music_gen_checkpoint_root}")
+    write_log(f"music_gen_model={args.music_gen_model}")
+    if SESSION_ID:
+        write_log(f"sessionId={SESSION_ID}")
+    if RUNTIME_CANDIDATE:
+        write_log(f"runtimeCandidate={RUNTIME_CANDIDATE}")
+    write_log(f"fallbackAttempted={FALLBACK_ATTEMPTED}")
+    if args.backend_requested:
+        write_log(f"backendRequested={args.backend_requested}")
+    if args.backend_install_plan:
+        write_log(f"backendInstallPlan={args.backend_install_plan}")
+    log_event(
+        "installer",
+        "startup",
+        "installer_started",
+        pythonExecutable=sys.executable,
+        runtimeRoot=str(runtime_root),
+        modelsDir=str(models_dir),
+        musicGenCheckpointRoot=str(music_gen_checkpoint_root),
+        musicGenModel=args.music_gen_model,
+        requestedFeatures=normalize_feature_selection(args.features),
+        verifyExistingRuntime=bool(args.verify_existing_runtime),
+        backendRequested=args.backend_requested,
+        backendInstallPlan=args.backend_install_plan,
+    )
+
+    runtime_root.parent.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    effective_backend_requested = args.backend_requested.strip()
+    requested_features = normalize_feature_selection(args.features)
+    hardware_report = probe_hardware_requirements()
+    requested_feature_payload = build_feature_payload(requested_features, hardware_report)
+    install_features = filter_compatible_features(requested_features, hardware_report)
+
+    write_log("requestedFeatures=" + ",".join(requested_features))
+    write_log("installFeatures=" + ",".join(install_features))
+    write_log("hardware=" + json.dumps(hardware_report, ensure_ascii=True))
+    log_event(
+        "installer",
+        "checking",
+        "hardware_probe_finished",
+        requestedFeatures=requested_features,
+        installFeatures=install_features,
+        hardware=hardware_report,
+        features=requested_feature_payload,
+    )
+
+    if not install_features:
+        fail(
+            hardware_block_message(requested_features, requested_feature_payload),
+            state="error",
+            progress=0.02,
+            error_code="hardware_requirement_unmet",
+            selectedFeatures=requested_features,
+            installedFeatures=[],
+            hardware=hardware_report,
+            features=requested_feature_payload,
+        )
+
+    if install_features != requested_features:
+        emit(
+            "checking",
+            0.03,
+            message="Only compatible AI features will be installed on this machine.",
+            stepLabel="Checking AI feature compatibility",
+            selectedFeatures=install_features,
+            requestedFeatures=requested_features,
+            hardware=hardware_report,
+            features=build_feature_payload(install_features, hardware_report),
+        )
+
+    if args.verify_existing_runtime:
+        install_source = "downloadedRuntime"
+        requires_external_python = False
+        python_detected = False
+        build_runtime_mode = "downloaded-runtime"
+        runtime_python = resolve_runtime_python(runtime_root)
+        backend_install_plan = None
+        backend_requested = args.backend_requested.strip()
+        effective_backend_requested = backend_requested
+        if args.backend_install_plan:
+            backend_install_plan = load_backend_install_plan(Path(args.backend_install_plan).expanduser().resolve())
+        verify_runtime(
+            runtime_python,
+            runtime_root,
+            require_audio_separator=backend_install_plan is None,
+            require_music_generation=False,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+        if backend_install_plan is not None:
+            effective_backend_requested = backend_requested or str(backend_install_plan.get("backend", "")).strip() or "cpu"
+            try:
+                apply_backend_install_plan(
+                    runtime_python,
+                    runtime_root,
+                    backend_install_plan,
+                    backend_requested=effective_backend_requested,
+                    selected_features=install_features,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                )
+                verify_runtime(
+                    runtime_python,
+                    runtime_root,
+                    require_audio_separator=True,
+                    require_music_generation=False,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    raise_on_error=True,
+                )
+                probe_runtime(
+                    runtime_python,
+                    runtime_root,
+                    models_dir,
+                    args.model,
+                    acceleration_mode="auto",
+                    music_checkpoint_root=music_gen_checkpoint_root,
+                    music_model_id=args.music_gen_model,
+                    backend_requested=effective_backend_requested,
+                    install_source=install_source,
+                    requires_external_python=requires_external_python,
+                    python_detected=python_detected,
+                    build_runtime_mode=build_runtime_mode,
+                    raise_on_error=True,
+                )
+            except InstallerStepError as primary_exc:
+                fallback_plan = resolve_fallback_backend_install_plan(runtime_root, effective_backend_requested)
+                if fallback_plan is None or FALLBACK_ATTEMPTED:
+                    fail(
+                        primary_exc.message,
+                        progress=primary_exc.progress,
+                        error_code=primary_exc.error_code,
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+
+                fallback_backend_requested, fallback_backend_install_plan = fallback_plan
+                failed_backend_requested = effective_backend_requested
+                FALLBACK_ATTEMPTED = True
+                effective_backend_requested = fallback_backend_requested
+                write_log(f"fallbackAttempted={FALLBACK_ATTEMPTED}")
+                write_log(f"backendRequested={effective_backend_requested}")
+                log_event(
+                    "installer",
+                    "installing_backend",
+                    "backend_fallback_started",
+                    failedBackend=failed_backend_requested,
+                    fallbackBackend=fallback_backend_requested,
+                    previousErrorCode=primary_exc.error_code,
+                    previousErrorMessage=primary_exc.message,
+                )
+                emit(
+                    "installing_backend",
+                    0.74,
+                    message=f"Falling back to the {fallback_backend_requested} AI backend",
+                    backendRequested=fallback_backend_requested,
+                    terminalReason="backend_fallback_started",
+                    installSource=install_source,
+                    requiresExternalPython=requires_external_python,
+                    pythonDetected=python_detected,
+                    buildRuntimeMode=build_runtime_mode,
+                )
+
+                try:
+                    fallback_runtime_root = runtime_root
+                    fallback_runtime_python = runtime_python
+                    if platform.system() == "Windows" and install_source == "downloadedRuntime":
+                        fallback_runtime_root, fallback_runtime_python = prepare_windows_fallback_runtime(
+                            runtime_root, runtime_python
+                        )
+                    apply_backend_install_plan(
+                        fallback_runtime_python,
+                        fallback_runtime_root,
+                        fallback_backend_install_plan,
+                        backend_requested=fallback_backend_requested,
+                        selected_features=install_features,
+                        install_source=install_source,
+                        requires_external_python=requires_external_python,
+                        python_detected=python_detected,
+                        build_runtime_mode=build_runtime_mode,
+                    )
+                    verify_runtime(
+                        fallback_runtime_python,
+                        fallback_runtime_root,
+                        require_audio_separator=True,
+                        require_music_generation=False,
+                        install_source=install_source,
+                        requires_external_python=requires_external_python,
+                        python_detected=python_detected,
+                        build_runtime_mode=build_runtime_mode,
+                        raise_on_error=True,
+                    )
+                    probe_runtime(
+                        fallback_runtime_python,
+                        fallback_runtime_root,
+                        models_dir,
+                        args.model,
+                        acceleration_mode="auto",
+                        music_checkpoint_root=music_gen_checkpoint_root,
+                        music_model_id=args.music_gen_model,
+                        backend_requested=fallback_backend_requested,
+                        install_source=install_source,
+                        requires_external_python=requires_external_python,
+                        python_detected=python_detected,
+                        build_runtime_mode=build_runtime_mode,
+                        raise_on_error=True,
+                    )
+                    runtime_root = fallback_runtime_root
+                    runtime_python = fallback_runtime_python
+                    log_event(
+                        "installer",
+                        "installing_backend",
+                        "backend_fallback_succeeded",
+                        backendRequested=fallback_backend_requested,
+                    )
+                except InstallerStepError as fallback_exc:
+                    log_event(
+                        "installer",
+                        "installing_backend",
+                        "backend_fallback_failed",
+                        backendRequested=fallback_backend_requested,
+                        errorCode=fallback_exc.error_code,
+                        errorMessage=fallback_exc.message,
+                    )
+                    fail(
+                        fallback_exc.message,
+                        progress=fallback_exc.progress,
+                        error_code="backend_fallback_exhausted",
+                        installSource=install_source,
+                        requiresExternalPython=requires_external_python,
+                        pythonDetected=python_detected,
+                        buildRuntimeMode=build_runtime_mode,
+                    )
+    else:
+        install_source = "externalPython"
+        requires_external_python = True
+        python_detected = bootstrap_python is not None and bootstrap_python.exists()
+        build_runtime_mode = "unbundled-dev"
+
+        if bootstrap_python is None or not bootstrap_python.exists():
+            fail(
+                f"{format_supported_python_range()} is required for this dev build before AI tools can be installed.",
+                state="pythonMissing",
+                error_code="python_missing",
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=False,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+        bootstrap_python_version = read_python_version_info(bootstrap_python)
+        if (
+            bootstrap_python_version is not None
+            and (
+                bootstrap_python_version[:2] < FALLBACK_MIN_PYTHON
+                or bootstrap_python_version[:2] >= FALLBACK_MAX_PYTHON_EXCLUSIVE
+            )
+        ):
+            fail(
+                f"This dev fallback only supports {format_supported_python_range()}. Reinstall a proper release build or use a supported Python version.",
+                state="pythonMissing",
+                error_code="unsupported_python_version",
+                installSource=install_source,
+                requiresExternalPython=requires_external_python,
+                pythonDetected=True,
+                buildRuntimeMode=build_runtime_mode,
+            )
+
+        preferred_music_gen_python = find_windows_python_311()
+        if preferred_music_gen_python is not None and safe_resolve(preferred_music_gen_python) != safe_resolve(bootstrap_python):
+            write_log(f"musicGenPreferredPython={preferred_music_gen_python}")
+            log_event(
+                "installer",
+                "checking",
+                "music_generation_python_selected",
+                selectedPython=str(preferred_music_gen_python),
+                previousPython=str(bootstrap_python),
+            )
+            bootstrap_python = preferred_music_gen_python
+            bootstrap_python_version = read_python_version_info(bootstrap_python)
+
+        emit(
+            "checking",
+            0.05,
+            message=f"Using Python {format_python_version(bootstrap_python_version)}",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=True,
+            buildRuntimeMode=build_runtime_mode,
+        )
+        runtime_python = bootstrap_runtime(runtime_root, bootstrap_python, install_features)
+        verify_runtime(
+            runtime_python,
+            runtime_root,
+            require_audio_separator=True,
+            require_music_generation=False,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=True,
+            build_runtime_mode=build_runtime_mode,
+        )
+
+    model_path: Path | None = None
+    if FEATURE_STEM_SEPARATION in install_features:
+        model_path = download_model(
+            runtime_python,
+            runtime_root,
+            models_dir,
+            args.model,
+            backend_requested=effective_backend_requested,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+    else:
+        emit(
+            "downloading_model",
+            0.94,
+            message="Stem Separation was not selected; skipping the stem model download.",
+            stepLabel="Skipping the stem model download",
+            selectedFeatures=install_features,
+            requestedFeatures=requested_features,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    if FEATURE_AUDIO_GENERATION in install_features:
+        download_music_gen_model(
+            runtime_python,
+            args.music_gen_model,
+            music_gen_checkpoint_root,
+            install_source=install_source,
+            requires_external_python=requires_external_python,
+            python_detected=python_detected,
+            build_runtime_mode=build_runtime_mode,
+        )
+    else:
+        emit(
+            "downloading_model",
+            0.95,
+            message="Audio Generation was not selected or is incompatible; skipping ACE-Step model downloads.",
+            stepLabel="Skipping Audio Generation model downloads",
+            selectedFeatures=install_features,
+            requestedFeatures=requested_features,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    verify_runtime(
+        runtime_python,
+        runtime_root,
+        require_audio_separator=True,
+        require_music_generation=False,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    runtime_probe = probe_runtime(
+        runtime_python,
+        runtime_root,
+        models_dir,
+        args.model,
+        acceleration_mode="auto",
+        music_checkpoint_root=music_gen_checkpoint_root,
+        music_model_id=args.music_gen_model,
+        backend_requested=effective_backend_requested,
+        install_source=install_source,
+        requires_external_python=requires_external_python,
+        python_detected=python_detected,
+        build_runtime_mode=build_runtime_mode,
+    )
+
+    music_generation_ready = bool(runtime_probe.get("musicGenerationReady", False))
+    music_generation_layout_valid = bool(runtime_probe.get("musicGenerationLayoutValid", False))
+    music_generation_status_message = runtime_probe.get("musicGenerationStatusMessage", "")
+    music_generation_performance_ready = bool(runtime_probe.get("musicGenerationPerformanceReady", True))
+    music_generation_performance_message = runtime_probe.get("musicGenerationPerformanceStatusMessage", "")
+    installed_features: list[str] = []
+    stem_separation_ready = bool(runtime_probe.get("runtimeReady", False)) and bool(runtime_probe.get("modelInstalled", False))
+    if stem_separation_ready:
+        installed_features.append(FEATURE_STEM_SEPARATION)
+    if (
+        FEATURE_AUDIO_GENERATION in install_features
+        and music_generation_ready
+        and music_generation_layout_valid
+        and music_generation_performance_ready
+    ):
+        installed_features.append(FEATURE_AUDIO_GENERATION)
+    final_features = build_feature_payload(install_features, hardware_report, installed_features=installed_features)
+    ready_message = (
+        "Selected AI features are ready."
+        if all(feature_id in installed_features for feature_id in install_features)
+        else (
+            "Stem separation is ready, but Audio Generation is not installed on this machine."
+            if FEATURE_STEM_SEPARATION in installed_features and FEATURE_AUDIO_GENERATION not in install_features
+            else "AI feature setup finished, but one or more selected features are not ready."
+        )
+    )
+
+    if PENDING_RUNTIME_CANDIDATE is not None and not stem_separation_ready:
+        fail(
+            "The DirectML runtime did not pass the final stem-separation check; the previous runtime remains active.",
+            progress=0.99,
+            error_code="backend_fallback_probe_failed",
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    try:
+        activate_windows_runtime(base_runtime_root, runtime_root)
+    except InstallerStepError as activation_error:
+        fail(
+            activation_error.message,
+            progress=activation_error.progress,
+            error_code=activation_error.error_code,
+            installSource=install_source,
+            requiresExternalPython=requires_external_python,
+            pythonDetected=python_detected,
+            buildRuntimeMode=build_runtime_mode,
+        )
+
+    emit(
+        "ready",
+        1.0,
+        message=ready_message,
+        runtimeRoot=str(runtime_root),
+        modelsDir=str(models_dir),
+        modelPath=str(model_path or (models_dir / args.model)),
+        runtimeInstalled=True,
+        modelInstalled=stem_separation_ready,
+        available=stem_separation_ready,
+        selectedFeatures=install_features,
+        requestedFeatures=requested_features,
+        installedFeatures=installed_features,
+        hardware=hardware_report,
+        features=final_features,
+        musicGenerationReady=FEATURE_AUDIO_GENERATION in install_features and music_generation_ready,
+        musicGenerationLayoutValid=FEATURE_AUDIO_GENERATION in install_features and music_generation_layout_valid,
+        musicGenerationStatusMessage=(
+            music_generation_status_message
+            if FEATURE_AUDIO_GENERATION in install_features
+            else "Audio Generation was not selected for this install."
+        ),
+        musicGenerationFailureCode=runtime_probe.get("musicGenerationFailureCode", ""),
+        musicGenerationPerformanceReady=music_generation_performance_ready,
+        musicGenerationPerformanceStatusMessage=music_generation_performance_message,
+        musicGenerationModelId=runtime_probe.get("musicGenerationModelId", args.music_gen_model),
+        musicGenerationModelRepoId=runtime_probe.get("musicGenerationModelRepoId", DEFAULT_MUSIC_GEN_MODEL_REPO),
+        musicGenerationSharedRepoId=runtime_probe.get("musicGenerationSharedRepoId", DEFAULT_MUSIC_GEN_SHARED_REPO),
+        musicGenerationCheckpointRoot=runtime_probe.get("musicGenerationCheckpointRoot", str(music_gen_checkpoint_root)),
+        aceStepVersion=runtime_probe.get("aceStepVersion"),
+        installSource=install_source,
+        requiresExternalPython=requires_external_python,
+        pythonDetected=python_detected,
+        buildRuntimeMode=build_runtime_mode,
+        supportedBackends=runtime_probe.get("supportedBackends", []),
+        backendRequested=effective_backend_requested,
+        selectedBackend=runtime_probe.get("selectedBackend", "cpu"),
+        runtimeVersion=runtime_probe.get("runtimeVersion", ""),
+        modelVersion=runtime_probe.get("modelVersion", args.model),
+        verificationMode="in-process" if safe_resolve(runtime_python) == safe_resolve(Path(sys.executable)) else "subprocess",
+        restartRequired=bool(runtime_probe.get("restartRequired", False)),
+        statusWarning=music_generation_performance_message if FEATURE_AUDIO_GENERATION in install_features and music_generation_ready and music_generation_layout_valid and not music_generation_performance_ready else "",
+        statusWarningCode="music_generation_acceleration_incomplete" if FEATURE_AUDIO_GENERATION in install_features and music_generation_ready and music_generation_layout_valid and not music_generation_performance_ready else "",
+    )
+    log_event(
+        "installer",
+        "ready",
+        "installer_ready",
+        runtimeVersion=runtime_probe.get("runtimeVersion", ""),
+        modelVersion=runtime_probe.get("modelVersion", args.model),
+        backendRequested=effective_backend_requested,
+        supportedBackends=runtime_probe.get("supportedBackends", []),
+        selectedBackend=runtime_probe.get("selectedBackend", "cpu"),
+        verificationMode="in-process" if safe_resolve(runtime_python) == safe_resolve(Path(sys.executable)) else "subprocess",
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        fail("AI tools installation was cancelled.", state="cancelled", progress=0.0, error_code="cancelled")

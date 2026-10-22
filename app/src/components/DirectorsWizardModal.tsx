@@ -31,6 +31,63 @@ const RASAS_META: { type: RasaType; label: string; emoji: string; ragaId: string
   { type: 'Raudra', label: 'Raudra (Fury & Cosmic Destruction)', emoji: '⚡', ragaId: 'marwa', description: 'High psychological tension, cosmic dance of fire, dramatic confrontation.' }
 ];
 
+const SANSKRIT_SHLOKAS: Record<RasaType, { title: string; devanagari: string; iast: string; meaning: string }> = {
+  Adbhuta: {
+    title: 'Vishvarupa Darshanam (Universal Cosmic Form)',
+    devanagari: 'ॐ नमो भगवते वासुदेवाय । पश्य मे पार्थ रूपाणि शतशोऽथ सहस्रशः ॥',
+    iast: 'oṃ namo bhagavate vāsudevāya | paśya me pārtha rūpāṇi śataśo\'tha sahasraśaḥ ||',
+    meaning: 'Cosmic revelation of infinite universal forms (Bhagavad Gita 11.5)'
+  },
+  Shringara: {
+    title: 'Madhurashtakam (Divine Romance & Grace)',
+    devanagari: 'अधरं मधुरं वदनं मधुरं नयनं मधुरं हसितं मधुरम् । मधुराधिपतेरखिलं मधुरम् ॥',
+    iast: 'adharaṃ madhuraṃ vadanaṃ madhuraṃ nayanaṃ madhuraṃ hasitaṃ madhuram | madhurādhipaterakhilaṃ madhuram ||',
+    meaning: 'Supreme sweetness of the beloved, sublime romance and divine grace'
+  },
+  Karuna: {
+    title: 'Maha Mrityunjaya (Soul Solace & Pathos)',
+    devanagari: 'ॐ त्र्यम्बकं यजामहे सुगन्धिं पुष्टिवर्धनम् । उर्वारुकमिव बन्धनान्मृत्योर्मुक्षीय मामृतात् ॥',
+    iast: 'oṃ tryambakaṃ yajāmahe sugandhiṃ puṣṭivardhanam | urvārukamiva bandhanānmṛtyormukṣīya māmṛtāt ||',
+    meaning: 'Deep soul solace, healing of mortal grief, liberation into eternal light'
+  },
+  Shanta: {
+    title: 'Pavamana Shanti Mantra (Transcendent Peace)',
+    devanagari: 'ॐ असतो मा सद्गमय । तमसो मा ज्योतिर्गमय । मृत्योर्मा अमृतं गमय ॥ ॐ शान्तिः ॥',
+    iast: 'oṃ asato mā sadgamaya | tamaso mā jyotirgamaya | mṛtyormā amṛtaṃ gamaya || oṃ śāntiḥ ||',
+    meaning: 'Lead from darkness to light, transcendent stillness and inner peace'
+  },
+  Veera: {
+    title: 'Dharma Jagriti (Heroic Duty & Valor)',
+    devanagari: 'यदा यदा हि धर्मस्य ग्लानिर्भवति भारत । अभ्युत्थानमधर्मस्य तदात्मानं सृजाम्यहम् ॥',
+    iast: 'yadā yadā hi dharmasya glānirbhavati bhārata | abhyutthānamadharmasya tadātmānaṃ sṛjāmyaham ||',
+    meaning: 'Heroic awakening to restore righteousness and vanquish chaos'
+  },
+  Raudra: {
+    title: 'Shiva Tandava Stotram (Cosmic Fury & Power)',
+    devanagari: 'जटाटवीगलज्जलप्रवाहपावितस्थले गलेऽवलम्ब्य लम्बितां भुजङ्गतुङ्गमालिकाम् ॥',
+    iast: 'jaṭāṭavīgalajjalapravāhapāvitasthale gale\'valambya lambitāṃ bhujaṅgatuṅgamālikām ||',
+    meaning: 'Cosmic fury of the cosmic dancer, fierce dissolution of illusion'
+  },
+  Hasya: {
+    title: 'Hasya Rasollasa (Joy & Playfulness)',
+    devanagari: 'हास्यं रसानां प्रवरं वदन्ति चित्तप्रसादं कुरुते नराणाम् । आनन्दकन्दं परिपूर्णरूपम् ॥',
+    iast: 'hāsyaṃ rasānāṃ pravaraṃ vadanti cittaprasādaṃ kurute narāṇām | ānandakandaṃ paripūrṇarūpam ||',
+    meaning: 'Laughter brings delight and clears the minds of mortals'
+  },
+  Bhayanaka: {
+    title: 'Narasimha Kavacham (Cosmic Terror & Protection)',
+    devanagari: 'उग्रं वीरं महाविष्णुं ज्वलन्तं सर्वतोमुखम् । नृसिंहं भीषणं भद्रं मृत्युमृत्युं नमाम्यहम् ॥',
+    iast: 'ugraṃ vīraṃ mahāviṣṇuṃ jvalantaṃ sarvatomukham | nṛsiṃhaṃ bhīṣaṇaṃ bhadraṃ mṛtyumṛtyuṃ namāmyaham ||',
+    meaning: 'Sublime awe and protection from existential dread'
+  },
+  Bibhatsa: {
+    title: 'Vairagya Shatakam (Aversion & Transcendence)',
+    devanagari: 'भोगा न भुक्ता वयमेव भुक्ताः कालो न यातो वयमेव याताः । तृष्णा न जीर्णा वयमेव जीर्णाः ॥',
+    iast: 'bhogā na bhuktā vayameva bhuktāḥ kālo na yāto vayameva yātāḥ | tṛṣṇā na jīrṇā vayameva jīrṇāḥ ||',
+    meaning: 'Dispassion toward mortal illusions and transience (Bhartrihari)'
+  }
+};
+
 export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
   isOpen,
   onClose,
@@ -40,7 +97,9 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
 }) => {
   const [selectedRasa, setSelectedRasa] = useState<RasaType>('Adbhuta');
   const [sceneArc, setSceneArc] = useState<'ambient_flat' | 'slow_build' | 'epic_climax' | 'drop_reveal'>('slow_build');
-  const [vocalMode, setVocalMode] = useState<'wordless_aalap' | 'custom_voice_clip' | 'sanskrit_mantra'>('wordless_aalap');
+  const [vocalMode, setVocalMode] = useState<'wordless_aalap' | 'custom_voice_clip' | 'sanskrit_mantra' | 'instrumental_only'>('wordless_aalap');
+  const [aalapVowel, setAalapVowel] = useState<'aaa' | 'ooo' | 'hey' | 'mmm'>('aaa');
+  const [aalapMovement, setAalapMovement] = useState<'vilambit' | 'meend_glides' | 'drut_taans'>('vilambit');
   const [customVoiceFileName, setCustomVoiceFileName] = useState<string | null>(null);
   const [breathiness, setBreathiness] = useState(65);
   const [raspGrit, setRaspGrit] = useState(30);
@@ -125,7 +184,10 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
       sceneTitle: `${selectedRasa} Scene Score`,
       arcType: sceneArc,
       vocalPreference: vocalMode,
+      aalapVowel,
+      aalapMovement,
       customVoiceName: customVoiceFileName || undefined,
+      isAlap: false,
       voiceReinterpretation: {
         breathiness,
         raspGrit,
@@ -357,11 +419,9 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <div className="text-right text-[11px] text-slate-400 font-mono">
-                <div>Tempo: <span className="text-slate-200 font-bold">78 BPM (Vilambit)</span></div>
-                <div>Tala: <span className="text-slate-200 font-bold">Teental (16)</span></div>
-              </div>
+            <div className="text-right text-[11px] text-slate-400 font-mono">
+              <div>Tempo: <span className="text-slate-200 font-bold">78 BPM (Vilambit)</span></div>
+              <div>Tala: <span className="text-slate-200 font-bold">Teental (16)</span></div>
             </div>
           </div>
 
@@ -395,53 +455,225 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
 
           {/* 4. Track 2: Vocal Designer & 15-30s Voice Drop Box */}
           <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-200 font-semibold uppercase tracking-wider text-[11px]">
-                Step 3: Track 2 Vocal Designer & Voice Reinterpretation
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-slate-200 font-semibold uppercase tracking-wider text-[11px] flex items-center gap-2">
+                <span>Step 3: Track 2 Vocal Designer & Voice Reinterpretation</span>
+                {vocalMode === 'wordless_aalap' && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 animate-pulse">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    Aalap Vocalist Active
+                  </span>
+                )}
+                {vocalMode === 'instrumental_only' && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">
+                    Muted (Instrumental)
+                  </span>
+                )}
               </span>
-              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+
+              {/* Interactive Vocal Mode Toggles */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* 1. Toggleable Wordless Aalap Button */}
                 <button
-                  onClick={() => setVocalMode('wordless_aalap')}
-                  className={`px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer ${
-                    vocalMode === 'wordless_aalap' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-400'
+                  type="button"
+                  onClick={() => setVocalMode(prev => prev === 'wordless_aalap' ? 'instrumental_only' : 'wordless_aalap')}
+                  title="Click to toggle Wordless Aalap vocals ON / OFF"
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-2 border cursor-pointer select-none ${
+                    vocalMode === 'wordless_aalap'
+                      ? 'bg-amber-500/25 border-amber-500/70 text-amber-200 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/30 font-semibold'
+                      : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                   }`}
                 >
-                  Wordless Aalap (Aaa/Ooo)
+                  <span className={`w-2 h-2 rounded-full transition-all ${
+                    vocalMode === 'wordless_aalap'
+                      ? 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] animate-pulse'
+                      : 'bg-slate-600'
+                  }`} />
+                  <span className="font-semibold">Wordless Aalap (Aaa/Ooo)</span>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold uppercase transition ${
+                    vocalMode === 'wordless_aalap'
+                      ? 'bg-amber-400 text-amber-950 shadow-sm'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {vocalMode === 'wordless_aalap' ? 'ON' : 'OFF'}
+                  </span>
                 </button>
+
+                {/* 2. Custom Voice Drop Box */}
                 <button
-                  onClick={() => setVocalMode('custom_voice_clip')}
-                  className={`px-2 py-1 rounded text-[11px] font-medium transition cursor-pointer ${
-                    vocalMode === 'custom_voice_clip' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-400'
+                  type="button"
+                  onClick={() => setVocalMode(prev => prev === 'custom_voice_clip' ? 'instrumental_only' : 'custom_voice_clip')}
+                  title="Click to toggle Custom Voice Sample Reinterpretation"
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    vocalMode === 'custom_voice_clip'
+                      ? 'bg-blue-500/25 border-blue-500/70 text-blue-200 shadow-md shadow-blue-500/20 ring-1 ring-blue-400/30 font-semibold'
+                      : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                   }`}
                 >
-                  📥 Custom Voice Drop Box
+                  <span className={`w-2 h-2 rounded-full transition-all ${
+                    vocalMode === 'custom_voice_clip'
+                      ? 'bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.9)] animate-pulse'
+                      : 'bg-slate-600'
+                  }`} />
+                  <span>📥 Custom Voice Drop Box</span>
+                </button>
+
+                {/* 3. Sacred Sanskrit Shloka (Vāgdhenu) */}
+                <button
+                  type="button"
+                  onClick={() => setVocalMode(prev => prev === 'sanskrit_mantra' ? 'instrumental_only' : 'sanskrit_mantra')}
+                  title="Click to toggle Sacred Sanskrit Vedic Chanting (IISc Vāgdhenu)"
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    vocalMode === 'sanskrit_mantra'
+                      ? 'bg-orange-500/25 border-orange-500/70 text-orange-200 shadow-md shadow-orange-500/20 ring-1 ring-orange-400/30 font-semibold'
+                      : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full transition-all ${
+                    vocalMode === 'sanskrit_mantra'
+                      ? 'bg-orange-400 shadow-[0_0_8px_rgba(251,146,60,0.9)] animate-pulse'
+                      : 'bg-slate-600'
+                  }`} />
+                  <span>🕉️ Sanskrit Shloka (Vāgdhenu)</span>
                 </button>
               </div>
             </div>
 
-            {/* Custom Voice Drop Box Area */}
+            {/* A. Wordless Aalap Designer Studio */}
+            {vocalMode === 'wordless_aalap' && (
+              <div className="p-3.5 rounded-xl bg-gradient-to-r from-amber-950/30 via-slate-900/90 to-slate-950/80 border border-amber-500/40 space-y-3 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-amber-300">📿 Wordless Aalap Studio</span>
+                    <span className="text-[10px] text-amber-400/80 font-mono">22 Shrutis Just Intonation</span>
+                  </div>
+                  <div className="text-[11px] text-slate-300">
+                    Pure expressive vowels • Sings without language barrier
+                  </div>
+                </div>
+
+                {/* Vowel Selection */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Select Core Singing Vowel:</span>
+                    <span className="text-amber-400 font-mono text-[10px]">
+                      Active: {aalapVowel === 'aaa' ? 'Aaa (आ)' : aalapVowel === 'ooo' ? 'Ooo (ऊ)' : aalapVowel === 'hey' ? 'Hey (हे)' : 'Mmm (ॐ)'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      { id: 'aaa', label: 'Aaa (आ)', desc: 'Broad chest warmth & grandeur' },
+                      { id: 'ooo', label: 'Ooo (ऊ)', desc: 'Inward meditative resonance' },
+                      { id: 'hey', label: 'Hey (हे)', desc: 'High dramatic vocal call' },
+                      { id: 'mmm', label: 'Mmm / Om (ॐ)', desc: 'Nasal hum & drone glide' }
+                    ].map(v => (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => setAalapVowel(v.id as any)}
+                        className={`p-2 rounded-lg border text-left transition cursor-pointer ${
+                          aalapVowel === v.id
+                            ? 'bg-amber-500/25 border-amber-500/70 text-amber-200 shadow-sm shadow-amber-500/20'
+                            : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <div className="font-bold text-xs">{v.label}</div>
+                        <div className="text-[9px] text-slate-400 leading-tight mt-0.5">{v.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Movement & Phrasing */}
+                <div className="flex items-center justify-between pt-1 text-[11px] flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Movement Style:</span>
+                    <div className="flex gap-1">
+                      {[
+                        { id: 'vilambit', label: 'Vilambit (Contemplative)' },
+                        { id: 'meend_glides', label: 'Continuous Meend' },
+                        { id: 'drut_taans', label: 'Drut Taans' }
+                      ].map(m => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setAalapMovement(m.id as any)}
+                          className={`px-2.5 py-1 rounded text-[10px] transition cursor-pointer ${
+                            aalapMovement === m.id
+                              ? 'bg-amber-500/30 text-amber-200 font-semibold border border-amber-500/50'
+                              : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    Raag {recommendedRaga.name} Swaras: <span className="text-amber-300 font-bold">{recommendedRaga.arohana}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* B. Custom Voice Drop Box Area */}
             {vocalMode === 'custom_voice_clip' && (
               <div 
                 onClick={handleSimulateAudioDrop}
-                className="border-2 border-dashed border-slate-700 hover:border-amber-500/60 rounded-xl p-4 text-center cursor-pointer bg-slate-950/40 transition"
+                className="border-2 border-dashed border-slate-700 hover:border-blue-500/60 rounded-xl p-4 text-center cursor-pointer bg-slate-950/40 transition animate-in fade-in duration-150"
               >
                 <Upload className="w-6 h-6 mx-auto mb-1 text-slate-400" />
                 {customVoiceFileName ? (
-                  <div className="text-amber-300 font-semibold flex items-center justify-center gap-1.5">
+                  <div className="text-blue-300 font-semibold flex items-center justify-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                     <span>Loaded: {customVoiceFileName}</span>
                   </div>
                 ) : (
                   <div>
                     <div className="font-semibold text-slate-300">Drag & drop a 15–30s vocal sample (.wav, .mp3)</div>
-                    <div className="text-[11px] text-slate-500">AI learns timbre, formants, and vibrato to reinterpret across the raga</div>
+                    <div className="text-[11px] text-slate-500">AI learns timbre, formants, and vibrato to reinterpret across Raag {recommendedRaga.name}</div>
                   </div>
                 )}
               </div>
             )}
 
+            {/* C. Sacred Sanskrit Shloka Card */}
+            {vocalMode === 'sanskrit_mantra' && (
+              <div className="p-3.5 rounded-xl bg-gradient-to-r from-orange-950/30 via-slate-900/90 to-slate-950/80 border border-orange-500/40 space-y-2 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-orange-300">🕉️ Vāgdhenu Vedic SVS</span>
+                    <span className="text-[10px] text-orange-400/80 font-mono">IISc Bengaluru • Zero Schwa-Deletion</span>
+                  </div>
+                  <span className="text-[10px] bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded border border-orange-500/30 font-medium">
+                    {SANSKRIT_SHLOKAS[selectedRasa].title}
+                  </span>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-slate-950/90 border border-slate-800">
+                  <div className="text-sm font-serif text-amber-200 font-medium tracking-wide">
+                    {SANSKRIT_SHLOKAS[selectedRasa].devanagari}
+                  </div>
+                  <div className="text-[10px] text-slate-400 italic mt-1 font-mono">
+                    {SANSKRIT_SHLOKAS[selectedRasa].iast}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    {SANSKRIT_SHLOKAS[selectedRasa].meaning}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* D. Instrumental Only Banner */}
+            {vocalMode === 'instrumental_only' && (
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-center text-xs text-slate-400 animate-in fade-in duration-150">
+                <span className="font-semibold text-slate-300">🔇 Instrumental Bed Mode:</span> Track 2 Vocalist is muted. Synthesis generates a pure acoustic raga ensemble (Sitar, Bansuri, Strings & Tanpura) with zero singing.
+              </div>
+            )}
+
             {/* Vocal Texture Sliders */}
-            <div className="grid grid-cols-4 gap-3 pt-2">
+            <div className={`grid grid-cols-4 gap-3 pt-2 transition-opacity ${vocalMode === 'instrumental_only' ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
               <div>
                 <div className="flex justify-between text-[11px] text-slate-400 mb-1">
                   <span>Breathiness</span>
@@ -509,7 +741,15 @@ export const DirectorsWizardModal: React.FC<DirectorsWizardModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3.5 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
           <div className="text-[11px] text-slate-400">
-            Auto-scores: <span className="text-slate-200">Track 1 (Bed)</span> + <span className="text-slate-200">Track 2 (Vocals)</span> + <span className="text-slate-200">Track 3 (Percussion)</span> + <span className="text-slate-200">Track 5 (Risers & Drops)</span>
+            Auto-scores: <span className="text-slate-200">Track 1 (Bed / Drone)</span> + {vocalMode === 'instrumental_only' ? (
+              <span className="text-slate-500 line-through" title="Track 2 Vocalist muted for instrumental bed">Track 2 (Vocals - Muted)</span>
+            ) : vocalMode === 'wordless_aalap' ? (
+              <span className="text-amber-300 font-medium" title="Wordless Aalap on pure expressive vowels">Track 2 (Wordless Aalap - {aalapVowel.toUpperCase()})</span>
+            ) : vocalMode === 'sanskrit_mantra' ? (
+              <span className="text-orange-300 font-medium" title="Vāgdhenu Vedic Recitation">Track 2 (Vedic Shloka)</span>
+            ) : (
+              <span className="text-blue-300 font-medium" title="Custom Voice Reinterpretation">Track 2 (Custom Voice)</span>
+            )} + <span className="text-slate-200">Track 3 (Percussion)</span> + <span className="text-slate-200">Track 5 (Ambience)</span>
           </div>
 
           <div className="flex items-center gap-2">

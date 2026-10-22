@@ -1,8 +1,45 @@
+# Dependencies and builds
 node_modules/
+app/node_modules/
 dist/
+app/dist/
 dist-ssr/
 *.log
 .DS_Store
 .obsidian/workspace.json
-app/node_modules/
-app/dist/
+
+# Audio and media assets (large files)
+Renders/
+*.wav
+*.mp3
+*.flac
+*.aif
+*.aiff
+
+# Binaries and compiled outputs
+backend/nad-backend
+backend/bin/
+*.exe
+*.o
+*.so
+*.dylib
+
+# Local databases and vector stores
+ruvector.db
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets and environment configs
+.env
+.env.local
+.env.*.local
+
+# Agent runtime caches and state
+.claude/
+.claude-flow/
+.swarm/
+
+# Legacy experiments
+soundcraft/
+theDAW/

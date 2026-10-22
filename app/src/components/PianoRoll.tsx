@@ -8,6 +8,7 @@ import {
 import { Raga, Track } from '../types/daw';
 import { calculateSwaraFrequency, hzToMidiWithCents } from '../lib/ragaEngine';
 import { audioEngine } from '../lib/webAudioEngine';
+import { TimeEngine } from '../lib/timeEngine';
 import { 
   GamakaConfig, 
   GamakaType, 
@@ -69,8 +70,8 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>('3'); // Default select Ga
   const [copiedPromptToast, setCopiedPromptToast] = useState<string | null>(null);
 
-  const tsParts = timeSignature.split('/');
-  const beatsPerBar = parseInt(tsParts[0]) || 4;
+  const parsedSig = TimeEngine.parseTimeSignature(timeSignature);
+  const beatsPerBar = parsedSig.beatsPerBar;
 
   const keysRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -573,7 +574,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         <div 
           ref={keysRef}
           onScroll={handleKeysScroll}
-          className="w-56 shrink-0 border-r border-white/[0.15] flex flex-col divide-y divide-white/[0.08] overflow-y-auto bg-[#0a0d14] shadow-md z-10 no-scrollbar"
+          className="w-80 shrink-0 border-r border-white/[0.15] flex flex-col divide-y divide-white/[0.08] overflow-y-auto bg-[#0a0d14] shadow-md z-10 no-scrollbar"
         >
           
           {/* Top spacer matching step header */}
@@ -639,14 +640,14 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
                     <div
                       key={stepIdx}
                       style={{ width: `${stepWidth}px` }}
-                      className={`h-full shrink-0 flex items-center ${isBarStart ? 'pl-2.5 pr-1' : 'px-1'} font-mono text-[10px] border-r ${
+                      className={`h-full shrink-0 flex items-center px-1 font-mono text-[10px] border-r ${
                         isBarStart 
                           ? 'border-white/[0.15] text-amber-200/90 font-medium bg-amber-500/[0.03]' 
                           : 'border-white/[0.05] text-slate-500'
                       }`}
                     >
                       {isBarStart ? (
-                        <span>Bar {barNum}</span>
+                        <span>{barNum}</span>
                       ) : (
                         <span className="text-[9px] text-slate-600">.{stepInBar}</span>
                       )}

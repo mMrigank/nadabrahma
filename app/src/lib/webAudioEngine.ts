@@ -275,17 +275,17 @@ class WebAudioEngine {
     osc.stop(now + durationSec + 0.05);
   }
 
-  // Metronome Click / Bol Accent with Moveable Sa & Acoustic Percussion Physical Modeling
   public playTalaClick(
     type: 'sam' | 'tali' | 'khali',
     baseSaHz: number = 138.59,
     volume: number = 0.5,
-    timbre: MetronomeTimbre = 'sa-harmonic'
+    timbre: MetronomeTimbre = 'sa-harmonic',
+    scheduledTime?: number
   ) {
     this.initContext();
     if (!this.ctx || !this.masterGain || volume <= 0) return;
 
-    const now = this.ctx.currentTime;
+    const now = scheduledTime !== undefined ? scheduledTime : this.ctx.currentTime;
     // Normalized dynamic accents: Sam (Apex clap/accent), Tali (Secondary clap), Khali (Soft wave tap)
     const accentMultiplier = type === 'sam' ? 1.0 : type === 'tali' ? 0.68 : 0.42;
     const peakGain = Math.max(0.01, Math.min(1.0, volume)) * accentMultiplier * 0.45;
@@ -1225,15 +1225,30 @@ class WebAudioEngine {
           }
         });
       } else {
-        // Ambient melodic drone fallback matching Moveable Sa
-        const osc = this.ctx.createOscillator();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(baseSaHz * 2, startTime);
-        osc.connect(clipGain);
+        // Musical harmonic acoustic drone fallback matching Moveable Sa & Pa
+        const osc1 = this.ctx.createOscillator();
+        const osc2 = this.ctx.createOscillator();
+        const droneGain = this.ctx.createGain();
 
-        osc.start(startTime);
-        osc.stop(startTime + totalDurationSec + 0.05);
-        activeNodes.push({ source: osc, gain: clipGain, stopTime: startTime + totalDurationSec });
+        osc1.type = 'triangle';
+        osc1.frequency.setValueAtTime(baseSaHz, startTime); // Tonic Sa
+
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(baseSaHz * 1.5, startTime); // Pancham Pa (fifth)
+
+        droneGain.gain.setValueAtTime(0.001, startTime);
+        droneGain.gain.linearRampToValueAtTime(0.2, startTime + 0.15);
+        droneGain.gain.exponentialRampToValueAtTime(0.001, startTime + totalDurationSec);
+
+        osc1.connect(droneGain);
+        osc2.connect(droneGain);
+        droneGain.connect(clipGain);
+
+        osc1.start(startTime);
+        osc2.start(startTime);
+        osc1.stop(startTime + totalDurationSec + 0.05);
+        osc2.stop(startTime + totalDurationSec + 0.05);
+        activeNodes.push({ source: osc1, gain: droneGain, stopTime: startTime + totalDurationSec });
       }
     }
 

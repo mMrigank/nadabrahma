@@ -566,35 +566,90 @@ export const INSTRUMENT_FAMILIES: { [roleKey: string]: InstrumentFamily } = {
   }
 };
 
+export interface InstrumentCategoryGroup {
+  id: string;
+  label: string;
+  icon: string;
+  category: string;
+  instruments: InstrumentOption[];
+}
+
+export const ALL_INDIAN_INSTRUMENT_CATEGORIES: InstrumentCategoryGroup[] = [
+  {
+    id: 'strings',
+    label: 'Strings (Tata)',
+    icon: '🪕',
+    category: 'Tata Vadya (Plucked & Bowed)',
+    instruments: INSTRUMENT_FAMILIES.strings.instruments
+  },
+  {
+    id: 'winds',
+    label: 'Winds (Sushira)',
+    icon: '🪈',
+    category: 'Sushira Vadya (Winds & Flutes)',
+    instruments: INSTRUMENT_FAMILIES.winds.instruments
+  },
+  {
+    id: 'percussion',
+    label: 'Percussion (Avanaddha)',
+    icon: '🥁',
+    category: 'Avanaddha Vadya (Drums & Tala)',
+    instruments: INSTRUMENT_FAMILIES.percussion.instruments
+  },
+  {
+    id: 'vocals',
+    label: 'Vocals (Vāgdhenu)',
+    icon: '📿',
+    category: 'Vedic Sanskrit & Classical Vocalise',
+    instruments: INSTRUMENT_FAMILIES.vocals.instruments
+  },
+  {
+    id: 'ambient_fx',
+    label: 'Drone & FX',
+    icon: '🕉️',
+    category: 'Harmonic Grounding & Infrasound',
+    instruments: [
+      ...INSTRUMENT_FAMILIES.atmosphere.instruments,
+      ...INSTRUMENT_FAMILIES.risers_drops.instruments
+    ]
+  }
+];
+
 /**
  * Helper to get the instrument family associated with a track
  */
-export function getTrackInstrumentFamily(track: { id?: string; role: string; name: string }): InstrumentFamily {
+export function getTrackInstrumentFamily(track: { id?: string; role: string; name: string; activeInstrument?: string }): InstrumentFamily {
+  // If activeInstrument is defined, check all families first
+  if (track.activeInstrument) {
+    for (const key of Object.keys(INSTRUMENT_FAMILIES)) {
+      const fam = INSTRUMENT_FAMILIES[key];
+      if (fam.instruments.some(i => i.name === track.activeInstrument || i.id === track.activeInstrument)) {
+        return fam;
+      }
+    }
+  }
+
   const lower = (track.name + ' ' + track.role).toLowerCase();
 
-  // Strict check for Track 1 ID to always return Moods (9 Rasas)
-  if (track.id === 'tr-1' || lower.includes('1.') || lower.includes('mood')) {
-    return INSTRUMENT_FAMILIES.mood_instrument;
-  }
-  if (lower.includes('2.') || lower.includes('vocal') || lower.includes('chant')) {
+  if (lower.includes('vocal') || lower.includes('chant') || lower.includes('recit')) {
     return INSTRUMENT_FAMILIES.vocals;
   }
-  if (lower.includes('3.') || lower.includes('string') || lower.includes('sitar') || lower.includes('sarod') || lower.includes('veena')) {
+  if (lower.includes('string') || lower.includes('sitar') || lower.includes('sarod') || lower.includes('veena') || lower.includes('santoor')) {
     return INSTRUMENT_FAMILIES.strings;
   }
-  if (lower.includes('4.') || lower.includes('wind') || lower.includes('flute') || lower.includes('bansuri')) {
+  if (lower.includes('wind') || lower.includes('flute') || lower.includes('bansuri') || lower.includes('shehnai')) {
     return INSTRUMENT_FAMILIES.winds;
   }
-  if (lower.includes('5.') || lower.includes('riser') || lower.includes('drop') || lower.includes('fx')) {
-    return INSTRUMENT_FAMILIES.risers_drops;
-  }
-  if (lower.includes('6.') || lower.includes('tabla') || lower.includes('percussion') || lower.includes('tala') || lower.includes('drum')) {
+  if (lower.includes('tabla') || lower.includes('pakhawaj') || lower.includes('percussion') || lower.includes('tala') || lower.includes('drum')) {
     return INSTRUMENT_FAMILIES.percussion;
   }
-  if (lower.includes('7.') || lower.includes('bass') || lower.includes('cello')) {
+  if (lower.includes('riser') || lower.includes('drop') || lower.includes('braam') || lower.includes('sfx')) {
+    return INSTRUMENT_FAMILIES.risers_drops;
+  }
+  if (lower.includes('bass') || lower.includes('sub')) {
     return INSTRUMENT_FAMILIES.bass;
   }
-  if (lower.includes('8.') || lower.includes('atmosphere') || lower.includes('ambient') || lower.includes('drone')) {
+  if (lower.includes('atmosphere') || lower.includes('ambient') || lower.includes('drone') || lower.includes('tanpura')) {
     return INSTRUMENT_FAMILIES.atmosphere;
   }
 
